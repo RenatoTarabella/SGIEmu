@@ -32,6 +32,29 @@ add_test(NAME cpu COMMAND test_r4k)
 add_executable(r4k_oracle tests/r4k_oracle.c)
 target_link_libraries(r4k_oracle r4kcore)
 
+# Macchina Indy (IP24): MC, HPC3, IOC/INT3, 8254, seriale, orologio, EEPROM
+add_library(indycore STATIC
+    src/indy/indy.c
+    src/indy/mc.c
+    src/indy/hpc3.c
+    src/indy/pit8254.c
+    src/indy/z85c30.c
+    src/indy/ds1386.c
+    src/indy/eeprom93.c
+    src/indy/kbc8042.c
+    src/indy/wd33c93.c
+)
+target_link_libraries(indycore r4kcore)
+
+# Test dei dispositivi dell'Indy
+add_executable(test_devices tests/test_devices.c)
+target_link_libraries(test_devices indycore)
+add_test(NAME devices COMMAND test_devices)
+
 # Avvio dell'Indy da riga di comando (diagnostica del boot della PROM)
 add_executable(indy_boot tools/indy_boot.c)
-target_link_libraries(indy_boot r4kcore)
+target_link_libraries(indy_boot indycore)
+
+# Disassemblatore di file binari (PROM, kernel)
+add_executable(mipsdis tools/mipsdis.c)
+target_link_libraries(mipsdis r4kcore)

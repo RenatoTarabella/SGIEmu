@@ -3,7 +3,24 @@
 An emulator for the Silicon Graphics Indy workstation aimed at running IRIX
 **fast** rather than cycle-exact. Written in C99, built with MSVC 2022 and CMake.
 
-Status: **stage 1: the R4400 CPU.**
+Status: **stage 2 — the Indy PROM runs**: power-on diagnostics, the System
+Maintenance Menu and the Command Monitor work on the serial console.
+
+```
+>> version
+PROM Monitor SGI Version 5.3 Rev B10 R4X00/R5000 IP24 Feb 12, 1996 (BE)
+>> hinv
+                   System: IP22
+                Processor: 100 Mhz R4400, with FPU
+              Memory size: 64 Mbytes
+```
+
+Emulated so far: the CPU (below), the MC memory controller (RAM banks, RPSS,
+VDMA), HPC3, IOC with INT3 interrupts and the 8254 timer, the Z85C30 serial
+port, the DS1386 clock with the NVRAM environment, the 8042 keyboard
+controller, the 93CS56 EEPROM and a first WD33C93 SCSI controller.
+
+The CPU:
 
 - MIPS III interpreter, 32/64 bit, big-endian
 - CP0: 48-entry TLB with page sizes from 4 KB to 16 MB, ASIDs, global entries,
@@ -41,7 +58,8 @@ repository. Put them in `roms/` and `cdrom/` (both git-ignored).
 build\Release\indy_boot.exe --prom roms\ip24prom.bin --trace 200
 ```
 
-runs the PROM headless and logs every access to hardware that isn't emulated yet.
+runs the PROM headless: the serial console goes to stdout, `--keys` types on
+it, and every access to hardware that isn't emulated yet is logged.
 
 ## License
 

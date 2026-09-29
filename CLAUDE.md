@@ -27,8 +27,16 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
 - `tests/test_r4k.c` unit tests; `tests/r4k_oracle.c` + `tests/diff_unicorn.py`
   differential test against Unicorn.
 - `tools/indy_boot.c` headless boot of the PROM (like `archie_boot`).
-- Coming: `src/indy/` one module per ASIC (MC, HPC3, IOC2/INT2 + 8254,
-  Newport/REX3, WD33C93, Seeq 8003, Z85C30, DS1286), `src/frontend` Win32.
+- `src/indy` the machine: `indy.c` (assembly, physical map, run loop in
+  slices of 2000 instructions), `mc.c` (MC: registers, RPSS, RAM banks from
+  MEMCFG, VDMA fill), `hpc3.c` (HPC3 + IOC + INT3 routing), and one file per
+  chip: `pit8254`, `z85c30`, `ds1386`, `eeprom93`, `kbc8042`, `wd33c93`.
+  Each chip is standalone (no `Indy` dependency) and tested in
+  `tests/test_devices.c`. Coming: Newport/REX3, SCSI devices, Seeq, HAL2,
+  `src/frontend` Win32.
+- `tools/mipsdis.c` disassembles a binary (PROM): `mipsdis FILE BASE FROM COUNT`.
+- `ref/` (git-ignored) holds the Linux IP22 headers and drivers downloaded as
+  documentation; read them, never copy code.
 - `roms/` (PROM) and `cdrom/` (IRIX images) exist only locally and are
   **git-ignored: never commit or redistribute them**.
 - Local material (from the user's MAME setups in `D:\SGI_MAME` and
@@ -58,8 +66,20 @@ cmake --build build --config Release
 build\Release\test_r4k.exe                  # must print "0 falliti"
 .venv\Scripts\python tests\diff_unicorn.py [cases] [seed] [category]
 build\Release\test_r4k.exe --bench          # MIPS of the interpreter
-build\Release\indy_boot.exe --prom roms\<file> [--trace N] [--trace-at ADDR] [--io N] [--exc N] [--n N]
+build\Release	est_devices.exe            # chips one by one
+build\Release\indy_boot.exe --prom roms\ip24prom.bin [--ms 5000] [--keys "..."] [--trace N]
+                             [--trace-at ADDR] [--io N] [--exc N] [--mc] [--ram MB] [--nvram FILE]
 ```
+
+`indy_boot` prints the serial console on stdout. `--keys` types on the
+serial port after 1 s emulated (`{CR}` Enter, `{WAIT}` half a second); the
+menu appears after about 6 s emulated, so start with a dozen `{WAIT}`:
+
+```
+indy_boot --prom roms\ip24prom.bin --ms 12000 --io 0 --exc 0 --keys "{WAIT}x12 5{CR}{WAIT}{WAIT}hinv{CR}"
+```
+(write the twelve `{WAIT}` out). `--io` prints accesses to hardware that
+doesn't exist yet, `--mc` every MC register write, `--exc` exceptions.
 
 Categories of the diff: `alu muldiv trap mem branch fpu misc`. Run 100k+
 cases with a couple of seeds after touching the CPU (100k takes ~25 s).
@@ -121,6 +141,34 @@ R4400:
   with Unimplemented Operation and IRIX emulates. Out-of-range float→int
   gives Invalid and 0x7FFFFFFF(FFFFFFFF), as QEMU.
 
+## Indy hardware facts (checked against the real PROM)
+
+- Addresses where the Linux structs are wrong: MC RPSS counter is at
+  `0x1FA01004`, the MC DMA (VDMA) registers at `0x1FA02000` (64-bit regs,
+  value at +4: MEMADR 2004, SIZE 2014, STRIDE 201C, GIO_ADR 2024, GIO_ADRS
+  202C = set+start, MODE 2034, RUN 204C); the WD33C93 of SCSI 0 is at
+  `0x1FBC0000` (SASR +3, SCMD +7), not `0x1FBC4000`.
+- MC is revision 3 (sysid): bank base `(cfg & 0xFF) << 22`, size
+  `((cfg & 0x1F00) + 0x100) << 14`. The PROM sizes a bank by configuring it
+  at 128 MB at `0x20000000` and writing at +4/+16/+64 MB: memory beyond the
+  SIMMs must wrap. With SBANKS (0x4000) the upper half is the second SIMM
+  side: absent here (single-sided), it must *not* wrap.
+- The PROM clears RAM with VDMA fill (mode 0x5A, fill value = GIO_ADR) and
+  wants DMA_RUN bit 0x40 set right after the start, then clear.
+- DS1386: year register = year - 1940 (IRIX `YRREF`); the PROM clears TE
+  before reading the clock, so the registers must be snapshotted then.
+  The Indy environment lives in the DS1386 NVRAM, not in the 93CS56 EEPROM.
+- IOC byte registers are the low byte of 32-bit words (offset +3). Serial:
+  channel B at IOC+0x30, A at +0x38. Panel idle value 0xF3 (buttons active
+  low); writing 0 in POWERON turns the machine off.
+- Interrupts: IP2 = local0 (INT3 istat0 & imask0), IP3 = local1, IP4/IP5 =
+  8254 counters 0/1 (cleared by writing TCLEAR), IP6 bus error, IP7 Count.
+  Mapped sources (serial 0x20, keyboard 0x10...) reach local0 bit 7 /
+  local1 bit 3 through cmeimask0/1. The 8254 counter 2 runs at 1 MHz and
+  clocks counters 0 and 1.
+- No graphics board: the PROM says "Cannot open video() for output" and uses
+  the serial console; GIO reads must give a bus error (the probe expects it).
+
 ## Lessons learned
 
 - MSVC: with `#pragma fenv_access(on)`, `isnan(NAN)` on a value built from
@@ -133,9 +181,10 @@ R4400:
 ## Stages
 
 1. **CPU R4400** — done: interpreter, CP0, TLB, exceptions, FPU, verified.
-   The real PROM runs until it polls the MC RPSS counter at 0x1FA01004.
-2. PROM prompt: CPU + MC + HPC3 + serial (Z85C30) + IOC2/INT2/8254 + DS1286.
-   The PROM talks on the serial port before graphics.
+2. PROM prompt — done: power-on diagnostics, System Maintenance Menu and
+   Command Monitor on the serial console (`hinv`, `printenv`, `date`).
+   Open: hinv reports a 128 KB secondary cache (should be 1 MB); CPU speed
+   is shown as 100 MHz (ns_per_insn = 10).
 3. Newport minimal: the graphical PROM and its menu.
 4. SCSI (WD33C93) and disk: sash / fx, install IRIX from CD image.
 5. IRIX multi-user, then the desktop.
