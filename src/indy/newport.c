@@ -270,7 +270,8 @@ static void draw_block(Newport *n, int kind)
         int row_end = step_block(n, &x, &y, ydir);
         if (limit >= 0 && count >= limit) break;
         if (row_end) {
-            if (kind == GO_PATTERN) break;                        /* una riga per pattern */
+            /* pattern e dati dall'host: a fine riga il resto della parola si scarta */
+            if (kind == GO_PATTERN || kind == GO_HOST) break;
             if (am == AM_SPAN) break;
             if (kind == GO_FULL && !(dm0 & DM0_STOPY)) break;     /* senza STOPY: una riga */
             if ((ydir > 0 && y > n->yend) || (ydir < 0 && y < n->yend)) break;
@@ -351,9 +352,8 @@ static void go(Newport *n, int kind)
 {
     uint32_t dm0 = n->drawmode0;
     int op = (int)(dm0 & DM0_OPMASK), am = DM0_AM(dm0);
-    n->draws++;
-    if (n->trace > 0 && op && ((kind == GO_HOST && (n->ystart == 300 || n->ystart == 700) && n->xstart < 40)
-                               || op == DM0_READ || op == DM0_S2S)) {
+    if (n->trace > 0 && op) {                          /* --nptrace: tutti i comandi */
+                               && ((n->xstart >= 355 && n->xstart <= 420) || (n->xend >= 355 && n->xend <= 420)) && !(n->xend == 1279 && n->yend == 1023)) {
         n->trace--;
         fprintf(stderr, "[go k%d dm0=%08X dm1=%08X (%d,%d)-(%d,%d) host=%08X ci=%X win=%08X clip=%X mv=%X]\n",
                 kind, dm0, n->drawmode1, n->xstart, n->ystart, n->xend, n->yend, n->hostrw0,
