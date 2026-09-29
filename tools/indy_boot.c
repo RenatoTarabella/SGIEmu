@@ -266,6 +266,44 @@ int main(int argc, char **argv)
         FILE *nf = fopen(save_nvram, "wb");
         if (nf) { fwrite(M.rtc.ram, 1, DS1386_SIZE, nf); fclose(nf); printf("NVRAM salvata in %s\n", save_nvram); }
     }
+    if (M.has_gfx) {                                   /* stato della Newport */
+        const Newport *g = &M.gfx;
+        long nz[4] = { 0, 0, 0, 0 };
+        uint32_t hist[16] = { 0 };
+        for (int k = 0; k < NP_FBW * NP_H; k++) {
+            if (g->rgb[k]) { nz[0]++; hist[g->rgb[k] & 15]++; }
+            if (g->olay[k]) nz[1]++;
+            if (g->pup[k]) nz[2]++;
+            if (g->cid[k]) nz[3]++;
+        }
+        printf("Newport: comandi %llu, pixel non nulli rgb=%ld olay=%ld pup=%ld cid=%ld\n",
+               (unsigned long long)g->draws, nz[0], nz[1], nz[2], nz[3]);
+        printf("  xmap modi:");
+        for (int k = 0; k < 32; k++) printf(" %X", g->xmap_mode[k]);
+        printf("\n  xmap config=%X curs=%X pup=%X  vc2 ctrl=%X did=%X/%X topscan=%X xywin=%08X\n",
+               g->xmap_config, g->xmap_curs_msb, g->xmap_pup_msb, g->vc2_reg[0x10],
+               g->vc2_reg[0x0E], g->vc2_reg[0x0F], g->topscan, g->xywin);
+        uint16_t de = g->vc2_reg[5];
+        printf("  vc2 did entry=%04X: tabella", de);
+        for (int k = 0; k < 6; k++) printf(" %04X", g->vc2_ram[(de + k) & 0x7FFF]);
+        printf(" ... riga 300 -> %04X:", g->vc2_ram[(de + 300) & 0x7FFF]);
+        for (int k = 0; k < 10; k++) printf(" %04X", g->vc2_ram[(g->vc2_ram[(de + 300) & 0x7FFF] + k) & 0x7FFF]);
+        printf("\n  hostrw (32/64 bit): set0 %llu/%llu set1 %llu/%llu go0 %llu/%llu go1 %llu/%llu",
+               (unsigned long long)g->hoststat[0][0][0], (unsigned long long)g->hoststat[0][0][1],
+               (unsigned long long)g->hoststat[0][1][0], (unsigned long long)g->hoststat[0][1][1],
+               (unsigned long long)g->hoststat[1][0][0], (unsigned long long)g->hoststat[1][0][1],
+               (unsigned long long)g->hoststat[1][1][0], (unsigned long long)g->hoststat[1][1][1]);
+        printf("\n  riga 800 -> %04X:", g->vc2_ram[(de + 800) & 0x7FFF]);
+        for (int k = 0; k < 10; k++) printf(" %04X", g->vc2_ram[(g->vc2_ram[(de + 800) & 0x7FFF] + k) & 0x7FFF]);
+        printf("  pixel (100,200)=%X (100,800)=%X (100,1000)=%X", g->rgb[200 * NP_FBW + 108],
+               g->rgb[800 * NP_FBW + 108], g->rgb[1000 * NP_FBW + 108]);
+        printf("\n  vc2 regs:");
+        for (int k = 0; k < 0x11; k++) printf(" %X", g->vc2_reg[k]);
+        printf("\n");
+        printf("  pixel a (640,300): rgb=%X  cmap[0..7]:", g->rgb[300 * NP_FBW + 648]);
+        for (int k = 0; k < 8; k++) printf(" %06X", g->cmap[k]);
+        printf("\n");
+    }
     if (png_path && M.has_gfx) {
         static uint32_t screen[NP_W * NP_H];
         np_render(&M.gfx, screen);

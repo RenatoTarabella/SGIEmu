@@ -46,6 +46,7 @@ enum {
 #define DM1_PLANES(x) ((x) & 7)
 #define DM1_DD(x)    (((x) >> 3) & 3)
 #define DM1_RWPCKD   0x00000080
+#define DM1_RWDBL    0x00000400
 #define DM1_HD(x)    (((x) >> 8) & 3)
 #define DM1_RGBMD    0x00008000
 #define DM1_FCLR     0x00020000
@@ -245,9 +246,12 @@ static void draw_block(Newport *n, int kind)
     int x = n->xstart, y = n->ystart;
     uint32_t fg = draw_color(n), bg = n->colorback & depth_mask(n->drawmode1);
     uint32_t pat = n->zpattern;
-    uint32_t host[8];
+    uint32_t host[16];
     int nhost = 0;
-    if (kind == GO_HOST) nhost = host_pixels(n, n->hostrw0, host);
+    if (kind == GO_HOST) {
+        nhost = host_pixels(n, n->hostrw0, host);
+        if (n->drawmode1 & DM1_RWDBL) nhost += host_pixels(n, n->hostrw1, host + nhost);   /* 64 bit */
+    }
     if ((dm0 & DM0_LRONLY) && n->xend < n->xsave) return;
 
     long limit = kind == GO_HOST ? nhost : kind == GO_PATTERN ? ((dm0 & DM0_L32) ? 32 : 1) : -1;
@@ -348,11 +352,12 @@ static void go(Newport *n, int kind)
     uint32_t dm0 = n->drawmode0;
     int op = (int)(dm0 & DM0_OPMASK), am = DM0_AM(dm0);
     n->draws++;
-    if (n->trace > 0 && op && kind == GO_FULL) {
+    if (n->trace > 0 && op && ((kind == GO_HOST && (n->ystart == 300 || n->ystart == 700) && n->xstart < 40)
+                               || op == DM0_READ || op == DM0_S2S)) {
         n->trace--;
-        fprintf(stderr, "[go dm0=%08X dm1=%08X (%d,%d)-(%d,%d) ci=%X vram=%X win=%08X clip=%X mask=%X]\n",
-                dm0, n->drawmode1, n->xstart, n->ystart, n->xend, n->yend, n->colori,
-                n->colorvram, n->xywin, n->clipmode, n->wrmask);
+        fprintf(stderr, "[go k%d dm0=%08X dm1=%08X (%d,%d)-(%d,%d) host=%08X ci=%X win=%08X clip=%X mv=%X]\n",
+                kind, dm0, n->drawmode1, n->xstart, n->ystart, n->xend, n->yend, n->hostrw0,
+                n->colori, n->xywin, n->clipmode, n->xymove);
     }
     if (op == DM0_S2S) { screen_to_screen(n); return; }
     if (op != DM0_DRAW) return;
@@ -524,7 +529,11 @@ static uint32_t rex_read(Newport *n, uint32_t off)
     case R_WRMASK:    return n->wrmask;
     case R_COLORI:    return n->colori;
     case R_HOSTRW0:
-        if ((n->drawmode0 & DM0_OPMASK) == DM0_READ) return read_pixels(n);
+        if ((n->drawmode0 & DM0_OPMASK) == DM0_READ) {
+            uint32_t w = read_pixels(n);
+            if (n->drawmode1 & DM1_RWDBL) n->hostrw1 = read_pixels(n);  /* 64 bit: la seconda parola */
+            return w;
+        }
         return n->hostrw0;
     case R_HOSTRW1:   return n->hostrw1;
     case R_DCBMODE:   return n->dcbmode;
@@ -582,8 +591,14 @@ static void rex_write(Newport *n, uint32_t off, uint32_t v, int is_go)
             n->colorblue = ((v >> 16) & 0xFF) << 11;
         }
         break;
-    case R_HOSTRW0:   n->hostrw0 = v; kind = GO_HOST; break;
-    case R_HOSTRW1:   n->hostrw1 = v; break;
+    case R_HOSTRW0:      /* in modo doppio (RWDBL) disegna hostrw0 e poi hostrw1, gia' scritto */
+        n->hostrw0 = v;
+        kind = GO_HOST;
+        break;
+    case R_HOSTRW1:
+        n->hostrw1 = v;
+        is_go = 0;
+        break;
     case R_DCBMODE:   n->dcbmode = v; break;
     default:
         if (off >= 0x210 && off <= 0x21C) {                      /* pendenze: segno e modulo */
@@ -653,6 +668,8 @@ uint64_t np_read(Newport *n, uint32_t off, int size)
 void np_write(Newport *n, uint32_t off, int size, uint64_t val)
 {
     off &= 0xFFFF;
+    if ((off & 0x7F8) == R_HOSTRW0)                   /* statistiche: come arrivano i dati */
+        n->hoststat[(off >> 11) & 1][(off >> 2) & 1][size == 8]++;
     if (size == 8) {
         np_write(n, off, 4, val >> 32);
         np_write(n, off + 4, 4, (uint32_t)val);
@@ -717,17 +734,30 @@ void np_render(const Newport *n, uint32_t *out)
         memset(out, 0, NP_W * NP_H * sizeof *out);
         return;
     }
-    uint32_t mode = n->xmap_mode[0];
+    /* DID: il registro 5 del VC2 punta a una tabella con un puntatore per
+       riga; ogni riga e' una lista di (x << 5) | DID finita da 0xFFFF,
+       con x in colonne del framebuffer. Il DID sceglie il modo XMAP. */
+    uint16_t did_table = n->vc2_reg[5];
     for (int y = 0; y < NP_H; y++) {
         int fy = (int)((y + n->topscan + 1) & 0x3FF);
-        const uint32_t *src = n->rgb + fy * NP_FBW + NP_X0;
-        const uint8_t *pup = n->pup + fy * NP_FBW + NP_X0;
+        const uint32_t *src = n->rgb + fy * NP_FBW;
+        const uint8_t *pup = n->pup + fy * NP_FBW;
         uint32_t *dst = out + y * NP_W;
-        for (int x = 0; x < NP_W; x++) {
+        uint16_t list = n->vc2_ram[(did_table + y) & 0x7FFF];
+        uint16_t e = did_table ? n->vc2_ram[list & 0x7FFF] : 0xFFFF;
+        uint32_t mode = n->xmap_mode[0];
+        int next_x = 0, k = 0;
+        for (int fx = NP_X0; fx < NP_X0 + NP_W; fx++) {
+            while (did_table && fx >= next_x && k < 64) {            /* spans della riga */
+                if (e == 0xFFFF) { next_x = 1 << 30; break; }
+                if ((int)(e >> 5) > fx) { next_x = e >> 5; break; }
+                mode = n->xmap_mode[e & 31];
+                e = n->vc2_ram[(list + ++k) & 0x7FFF];
+            }
             uint32_t c;
-            if (pup[x]) c = n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[x]) & 0x1FFF];
-            else c = expand(n, src[x], mode);
-            dst[x] = cmap_rgb(c);
+            if (pup[fx]) c = n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF];
+            else c = expand(n, src[fx], mode);
+            dst[fx - NP_X0] = cmap_rgb(c);
         }
     }
     /* cursore del VC2: 32x32 a 2 bit, due piani uno dopo l'altro */

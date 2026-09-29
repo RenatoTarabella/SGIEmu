@@ -57,6 +57,7 @@ typedef struct Newport {
     uint64_t draws;                         /* comandi eseguiti (per sapere se cambia) */
     int      irq;                           /* linea di interrupt (retrace) */
     long     trace;                         /* comandi di disegno da stampare */
+    uint64_t hoststat[2][2][2];             /* scritture di hostrw: [go][rw1][64 bit] */
 } Newport;
 
 int      np_init(Newport *n, int planes24);
