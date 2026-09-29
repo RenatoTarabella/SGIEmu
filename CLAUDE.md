@@ -31,6 +31,20 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   Newport/REX3, WD33C93, Seeq 8003, Z85C30, DS1286), `src/frontend` Win32.
 - `roms/` (PROM) and `cdrom/` (IRIX images) exist only locally and are
   **git-ignored: never commit or redistribute them**.
+- Local material (from the user's MAME setups in `D:\SGI_MAME` and
+  `D:\SGI_mame0256s`, MAME 0.287 and 0.256):
+  - `roms/ip24prom.bin` = `ip24prom.070-9101-011.bin` from MAME's
+    `indy_4610.zip` (512 KB); `roms/indy_4610/` also has the keyboard
+    `natural.bin` and a PAL dump;
+  - `roms/nvram/eeprom` (256 B, 93CS56 with the PROM environment) and
+    `roms/nvram/rtc` (8 KB DS1386) as saved by MAME;
+  - `disks/irix53.img`: raw 7.5 GB SCSI disk (SGI volume header with sash,
+    EFS root) with IRIX 5.3 installed, from `irix53.chd`;
+  - `cdrom/irix53.iso`: IRIX 5.3 install CD, converted from the MODE1_RAW
+    `sgi_irix_5.3.bin`.
+  Not copied: the freeware CD collection (100 GB CHD). MAME itself
+  (`mame.exe indy_4610 -gio64_gfx xl24 ...`, `-debug`) can be used as a
+  reference to watch the real PROM/IRIX behaviour; `chdman` extracts CHDs.
 - Source comments and commit messages are in Italian (ASCII: `e'`, `perche'`);
   README and this file are in English.
 
@@ -119,6 +133,7 @@ R4400:
 ## Stages
 
 1. **CPU R4400** — done: interpreter, CP0, TLB, exceptions, FPU, verified.
+   The real PROM runs until it polls the MC RPSS counter at 0x1FA01004.
 2. PROM prompt: CPU + MC + HPC3 + serial (Z85C30) + IOC2/INT2/8254 + DS1286.
    The PROM talks on the serial port before graphics.
 3. Newport minimal: the graphical PROM and its menu.
