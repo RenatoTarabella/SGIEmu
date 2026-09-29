@@ -72,6 +72,7 @@ typedef struct Indy {
     IndyIOC  ioc;
     uint32_t hpc_regs[0x80000 / 4];    /* registri HPC3 senza effetti particolari */
     uint32_t hpc_gio_misc, hpc_eeprom;
+    int      hpc_scsi_irq;             /* DMA SCSI 0 fermo a fine catena */
 
     Pit8254  pit;
     Z85c30   scc;
@@ -96,6 +97,7 @@ typedef struct Indy {
     int      scsi_log;                 /* stampa comandi SCSI e DMA */
     int      rtc_log;                  /* stampa le letture della NVRAM */
     long     gfx_log;                  /* accessi alla Newport da stampare */
+    uint64_t np_calls, np_ticks;       /* profilo: accessi alla Newport e tempo (rdtsc) */
     void   (*io_log)(struct Indy *m, int write, uint32_t pa, int size, uint64_t val);
 } Indy;
 

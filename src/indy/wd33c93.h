@@ -42,10 +42,13 @@ typedef struct Wd33c93 {
     long   (*dma)(void *user, uint8_t *buf, uint32_t len, int to_mem);
     void    *user;
 
-    /* comando in corso (polled) */
-    uint8_t *buf;
-    uint32_t len, pos;
-    int      poll;                    /* 0 niente, 1 dati verso l'host, 2 dall'host */
+    /* comando in corso */
+    uint8_t *buf;                     /* dati del comando (dal/per il dispositivo) */
+    uint32_t dlen, dpos;              /* quanti dati, quanti gia' passati */
+    uint32_t poll_end;                /* polled: fin dove si va con il registro dati */
+    int      poll;                    /* 0 niente, 1/2 polled verso/dall'host, 3 DMA in pausa */
+    int      connected, dir_in, executed, in_status, from_ti;
+    int      status, lun;
     uint8_t  cdb[16];
     int      target;
 
@@ -57,5 +60,6 @@ void    wd_init(Wd33c93 *w);
 void    wd_reset(Wd33c93 *w);
 uint8_t wd_read(Wd33c93 *w, int port);                /* port 0 = SASR, 1 = SCMD */
 void    wd_write(Wd33c93 *w, int port, uint8_t v);
+void    wd_dma_resume(Wd33c93 *w);                   /* il DMA dell'HPC3 e' ripartito */
 
 #endif

@@ -153,6 +153,7 @@ typedef struct R4k {
     void      *hook_user;
 
     uint64_t exc_count[32];
+    uint64_t flushes;                   /* svuotamenti completi della MMU veloce */
 
     /* ---- MMU veloce: 3 x 1024 voci ---- */
     R4kFast fast[3][R4K_FAST_SIZE];

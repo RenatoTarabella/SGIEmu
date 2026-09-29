@@ -54,9 +54,14 @@ typedef struct Newport {
     uint8_t  *olay, *pup, *cid;
     int      planes24;                      /* 1 = XL24, 0 = XL8 */
 
-    uint64_t draws;                         /* comandi eseguiti (per sapere se cambia) */
+    uint64_t draws;                         /* comandi eseguiti */
+    uint64_t gen;                           /* cambia a ogni modifica di cio' che si vede */
     int      irq;                           /* linea di interrupt (retrace) */
     long     trace;                         /* comandi di disegno da stampare */
+    struct { uint32_t dm0, dm1, kind; uint64_t n, px; } prof[32];   /* profilo dei comandi */
+    uint64_t pixels;
+    int      prof_slot;
+    uint64_t trace_after;                   /* traccia solo dopo tanti comandi */
     uint64_t hoststat[2][2][2];             /* scritture di hostrw: [go][rw1][64 bit] */
 } Newport;
 

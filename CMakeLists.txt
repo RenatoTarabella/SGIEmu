@@ -61,3 +61,12 @@ target_link_libraries(indy_boot indycore)
 # Disassemblatore di file binari (PROM, kernel)
 add_executable(mipsdis tools/mipsdis.c)
 target_link_libraries(mipsdis r4kcore)
+
+# L'Indy in una finestra Win32
+if(WIN32)
+    add_executable(indy WIN32 src/frontend/indy_win32.c)
+    target_link_libraries(indy indycore winmm)
+    if(MSVC)
+        set_target_properties(indy PROPERTIES LINK_FLAGS "/ENTRY:mainCRTStartup")
+    endif()
+endif()

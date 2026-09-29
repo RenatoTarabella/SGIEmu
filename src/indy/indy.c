@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <intrin.h>
 #include "indy/indy.h"
 
 #define PROM_BASE 0x1FC00000u
@@ -49,7 +50,9 @@ static int unmapped_write(void *ctx, uint32_t pa, int size, uint64_t val)
 static int np_io_read(void *ctx, uint32_t pa, int size, uint64_t *val)
 {
     Indy *m = ctx;
+    uint64_t t0 = __rdtsc();
     *val = np_read(&m->gfx, pa - 0x1F0F0000u, size);
+    m->np_calls++; m->np_ticks += __rdtsc() - t0;
     if (m->gfx_log > 0) {
         m->gfx_log--;
         fprintf(stderr, "[np R%d %04X -> %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
@@ -66,7 +69,9 @@ static int np_io_write(void *ctx, uint32_t pa, int size, uint64_t val)
         fprintf(stderr, "[np W%d %04X = %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
                 (unsigned long long)val, (unsigned long long)m->cpu.pc);
     }
+    uint64_t t0 = __rdtsc();
     np_write(&m->gfx, pa - 0x1F0F0000u, size, val);
+    m->np_calls++; m->np_ticks += __rdtsc() - t0;
     return 0;
 }
 

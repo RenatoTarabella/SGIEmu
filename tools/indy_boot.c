@@ -16,6 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "indy/indy.h"
 #include "cpu/r4k_disasm.h"
 #include "frontend/png.h"
@@ -26,6 +27,7 @@ static int last_tx_ch = 1;
 static int col0 = 1;
 static int mc_log, scsi_log, nv_log, ndisk;
 static long np_log, np_trace;
+static uint64_t np_trace_after;
 static const char *disk_path[8], *cdrom_path;
 static uint64_t dis_addr;
 static const char *png_path, *save_nvram;
@@ -97,6 +99,34 @@ static void on_tx(void *user, int ch, uint8_t c)
     fflush(stdout);
 }
 
+/* --kbd: i caratteri di --keys vanno alla tastiera PS/2 (disposizione USA)
+   invece che alla seriale */
+static int kbd_mode;
+
+static void send_char(uint8_t ch)
+{
+    if (!kbd_mode) { scc_rx(&M.scc, last_tx_ch, ch); return; }
+    static const char row[] = "1234567890-=\0\0qwertyuiop[]\0\0asdfghjkl;'`\0\\zxcvbnm,./";
+    static const char shifted[] = "!@#$%^&*()_+\0\0QWERTYUIOP{}\0\0ASDFGHJKL:\"~\0|ZXCVBNM<>?";
+    int sc = 0, shift = 0;
+    if (ch == '\r' || ch == '\n') sc = 0x1C;
+    else if (ch == ' ') sc = 0x39;
+    else if (ch == '\t') sc = 0x0F;
+    else if (ch == 8) sc = 0x0E;
+    else {
+        for (int k = 0; k < (int)sizeof row - 1; k++) {
+            if (row[k] && row[k] == (char)ch) { sc = 0x02 + k; break; }
+            if (shifted[k] && shifted[k] == (char)ch) { sc = 0x02 + k; shift = 1; break; }
+        }
+    }
+    if (!sc) return;
+    if (shift) kbc_key(&M.kbc, 0x2A, 0, 1);
+    kbc_key(&M.kbc, sc, 0, 1);
+    kbc_key(&M.kbc, sc, 0, 0);
+    if (shift) kbc_key(&M.kbc, 0x2A, 0, 0);
+    indy_update_irq(&M);
+}
+
 static void trace_one(R4k *c)
 {
     uint64_t insn;
@@ -152,9 +182,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--exc") && v) { exc_print_left = atol(v); k++; }
         else if (!strcmp(a, "--mc")) mc_log = 1;
         else if (!strcmp(a, "--scsi")) scsi_log = 1;
+        else if (!strcmp(a, "--kbd")) kbd_mode = 1;
         else if (!strcmp(a, "--nvlog")) nv_log = 1;
         else if (!strcmp(a, "--nplog") && v) { np_log = atol(v); k++; }
         else if (!strcmp(a, "--nptrace") && v) { np_trace = atol(v); k++; }
+        else if (!strcmp(a, "--nptrace-after") && v) { np_trace_after = strtoull(v, NULL, 0); k++; }
         else if (!strcmp(a, "--dis") && v) { dis_addr = strtoull(v, NULL, 16); k++; }
         else if (!strcmp(a, "--png") && v) { png_path = v; k++; }
         else if (!strcmp(a, "--bp") && v) { bp_addr = strtoull(v, NULL, 16); k++; }
@@ -187,6 +219,7 @@ int main(int argc, char **argv)
     M.rtc_log = nv_log;
     M.gfx_log = np_log;
     M.gfx.trace = np_trace;
+    M.gfx.trace_after = np_trace_after;
     if (scsi_log) M.scsi.log = scsi_cmd_log;
     /* dischi a partire dall'ID 1 (dksc(0,1) e' il disco di sistema), CD-ROM al 4 */
     for (int k = 0; k < ndisk; k++)
@@ -229,13 +262,13 @@ int main(int argc, char **argv)
             continue;
         }
         if (*kp && M.cpu.icount >= next_key) {
-            if (!strncmp(kp, "{CR}", 4)) { scc_rx(&M.scc, last_tx_ch, '\r'); kp += 4; next_key += 2 * per_ms; }
+            if (!strncmp(kp, "{CR}", 4)) { send_char(13); kp += 4; next_key += 30 * per_ms; }
             else if (!strncmp(kp, "{WAIT}", 6)) { kp += 6; next_key += 500 * per_ms; }
             else if (!strncmp(kp, "{T=", 3)) {                  /* {T=190}: aspetta il secondo 190 */
                 next_key = strtoull(kp + 3, NULL, 10) * 1000 * per_ms;
                 kp = strchr(kp, '}') ? strchr(kp, '}') + 1 : kp + 3;
             }
-            else { scc_rx(&M.scc, last_tx_ch, (uint8_t)*kp++); next_key += 2 * per_ms; }
+            else { send_char((uint8_t)*kp++); next_key += 30 * per_ms; }
         }
         uint64_t chunk = trace > 0 ? 1 : per_ms;
         if (chunk > total - done) chunk = total - done;
@@ -303,6 +336,21 @@ int main(int argc, char **argv)
         printf("  pixel a (640,300): rgb=%X  cmap[0..7]:", g->rgb[300 * NP_FBW + 648]);
         for (int k = 0; k < 8; k++) printf(" %06X", g->cmap[k]);
         printf("\n");
+    }
+    printf("profilo: accessi Newport %llu (%.1f Gcicli), flush MMU veloce %llu\n",
+           (unsigned long long)M.np_calls, M.np_ticks / 1e9, (unsigned long long)M.cpu.flushes);
+    if (M.has_gfx) {
+        printf("comandi Newport per tipo (quanti, pixel):\n");
+        for (int k = 0; k < 32; k++)
+            if (M.gfx.prof[k].n)
+                printf("  dm0=%08X dm1=%08X k%u  %12llu  %14llu\n", M.gfx.prof[k].dm0, M.gfx.prof[k].dm1,
+                       M.gfx.prof[k].kind, (unsigned long long)M.gfx.prof[k].n, (unsigned long long)M.gfx.prof[k].px);
+    }
+    if (M.has_gfx && getenv("RENDER_BENCH")) {        /* tempo di np_render */
+        static uint32_t scr[NP_W * NP_H];
+        clock_t t0 = clock();
+        for (int k = 0; k < 30; k++) np_render(&M.gfx, scr);
+        printf("np_render: %.1f ms\n", (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC / 30);
     }
     if (png_path && M.has_gfx) {
         static uint32_t screen[NP_W * NP_H];

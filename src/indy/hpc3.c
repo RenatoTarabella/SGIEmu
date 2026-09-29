@@ -70,6 +70,7 @@ static long scsi_dma(void *user, uint8_t *buf, uint32_t len, int to_mem)
     }
     *nd = desc;
     if (moved >= len) *ctrl &= ~SCTRL_ACTIVE;
+    else if (!(*ctrl & SCTRL_ACTIVE)) m->hpc_scsi_irq = 1;       /* catena finita: interrupt */
     if (m->scsi_log) fprintf(stderr, "[scsi dma %s %u byte]\n", to_mem ? "->mem" : "<-mem", moved);
     return (long)moved;
 }
@@ -102,7 +103,7 @@ void indy_update_irq(Indy *m)
     if (scc_irq(&m->scc)) map |= MAP_SERIAL;
     if (kbc_irq(&m->kbc)) map |= MAP_KBD;
     ioc->map_raw = map;
-    if (m->scsi.irq) ioc->lio0_raw |= L0_SCSI0; else ioc->lio0_raw &= (uint8_t)~L0_SCSI0;
+    if (m->scsi.irq || m->hpc_scsi_irq) ioc->lio0_raw |= L0_SCSI0; else ioc->lio0_raw &= (uint8_t)~L0_SCSI0;
     if (m->scsi1.irq) ioc->lio0_raw |= L0_SCSI1; else ioc->lio0_raw &= (uint8_t)~L0_SCSI1;
     uint8_t l0 = ioc->lio0_raw | ((map & ioc->cmeimask0) ? L0_MAP0 : 0);
     uint8_t l1 = ioc->lio1_raw | ((map & ioc->cmeimask1) ? L1_MAP1 : 0);
@@ -255,12 +256,16 @@ static void hpc_write32(Indy *m, uint32_t off, uint32_t v)
             rtc_write(&m->rtc, (int)((off - RTC_OFF) >> 2), (uint8_t)v, indy_now_ns(m));
             return;
         }
-        if (off == SCSI0_CTRL && (v & SCTRL_CRESET)) wd_reset(&m->scsi);
+        if (off == SCSI0_CTRL) {
+            m->hpc_scsi_irq = 0;
+            if (v & SCTRL_CRESET) wd_reset(&m->scsi);
+        }
         if (!(off < 0x30000 || (off >= 0x5C000 && off < RTC_OFF)) && m->io_log)
             m->io_log(m, 1, HPC_BASE + off, 4, v);
         if (m->scsi_log && off >= 0x10000 && off < 0x14000)
             fprintf(stderr, "[hpc3 %05X = %08X]\n", off, v);
         m->hpc_regs[(off >> 2) & 0x1FFFF] = v;
+        if (off == SCSI0_CTRL && (v & SCTRL_ACTIVE)) { wd_dma_resume(&m->scsi); indy_update_irq(m); }
         return;
     }
 }

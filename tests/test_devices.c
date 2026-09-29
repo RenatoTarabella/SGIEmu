@@ -178,6 +178,30 @@ static void test_scsi_disk(void)
     CHECK_EQ(wd_read(&w, 1), 0);                                      /* stato GOOD */
     wd_write(&w, 0, WD_STATUS);
     CHECK_EQ(wd_read(&w, 1), 0x16);
+    /* lettura a pezzi: TC = 256 byte per un comando da 1024, come fa IRIX */
+    static const uint8_t cdb2[10] = { 0x28, 0, 0, 0, 0, 1, 0, 0, 2, 0 };
+    wd_write(&w, 0, WD_CDB1);
+    for (int k = 0; k < 10; k++) wd_write(&w, 1, cdb2[k]);
+    wd_write(&w, 0, WD_TARGET_LUN); wd_write(&w, 1, 0); wd_write(&w, 1, 0);   /* LUN, fase 0 */
+    wd_write(&w, 0, WD_COUNT_HI); wd_write(&w, 1, 0); wd_write(&w, 1, 1); wd_write(&w, 1, 0);
+    wd_write(&w, 0, WD_COMMAND); wd_write(&w, 1, 0x08);
+    wd_write(&w, 0, WD_DATA);
+    ok = 1;
+    for (int k = 0; k < 256; k++) ok &= wd_read(&w, 1) == ((16 + k) & 0xFF);
+    CHECK_EQ(ok, 1);
+    wd_write(&w, 0, WD_STATUS);
+    CHECK_EQ(wd_read(&w, 1), 0x49);                                  /* pausa in fase dati */
+    wd_write(&w, 0, WD_PHASE);
+    CHECK_EQ(wd_read(&w, 1), 0x45);
+    wd_write(&w, 0, WD_COUNT_HI); wd_write(&w, 1, 0); wd_write(&w, 1, 3); wd_write(&w, 1, 0);
+    wd_write(&w, 0, WD_COMMAND); wd_write(&w, 1, 0x08);              /* riprende da 0x45 */
+    wd_write(&w, 0, WD_DATA);
+    ok = 1;
+    for (int k = 256; k < 1024; k++) ok &= wd_read(&w, 1) == ((16 + (k >= 512 ? 16 : 0) + (k & 511)) & 0xFF);
+    CHECK_EQ(ok, 1);
+    wd_write(&w, 0, WD_STATUS);
+    CHECK_EQ(wd_read(&w, 1), 0x16);
+
     /* blocco fuori dal disco: CHECK CONDITION, poi REQUEST SENSE */
     static const uint8_t bad[10] = { 0x28, 0, 0, 0, 0, 100, 0, 0, 1, 0 };
     uint32_t len = 512;
@@ -207,6 +231,35 @@ static void test_kbc(void)
     CHECK_EQ(kbc_read(&k, 1) & 0x20, 0x20);
     CHECK_EQ(kbc_read(&k, 0), 0xFA);
     CHECK_EQ(kbc_read(&k, 0), 0x00);
+
+    /* tasti: 'A' e freccia su, nei tre set */
+    kbc_reset(&k);
+    kbc_key(&k, 0x1E, 0, 1); kbc_key(&k, 0x1E, 0, 0);          /* traduzione: set 1 */
+    CHECK_EQ(kbc_read(&k, 0), 0x1E);
+    CHECK_EQ(kbc_read(&k, 0), 0x9E);
+    kbc_write(&k, 1, 0x60); kbc_write(&k, 0, 0x03);              /* senza traduzione: set 2 */
+    kbc_key(&k, 0x1E, 0, 0);
+    CHECK_EQ(kbc_read(&k, 0), 0xF0);
+    CHECK_EQ(kbc_read(&k, 0), 0x1C);
+    kbc_key(&k, 0x48, 1, 1);
+    CHECK_EQ(kbc_read(&k, 0), 0xE0);
+    CHECK_EQ(kbc_read(&k, 0), 0x75);
+    kbc_write(&k, 0, 0xF0); kbc_write(&k, 0, 0x03);              /* set 3 */
+    CHECK_EQ(kbc_read(&k, 0), 0xFA);
+    CHECK_EQ(kbc_read(&k, 0), 0xFA);
+    kbc_key(&k, 0x48, 1, 1); kbc_key(&k, 0x01, 0, 0);
+    CHECK_EQ(kbc_read(&k, 0), 0x63);                             /* su */
+    CHECK_EQ(kbc_read(&k, 0), 0xF0);
+    CHECK_EQ(kbc_read(&k, 0), 0x08);                             /* Esc rilasciato */
+    /* mouse: niente pacchetti finche' non e' abilitato */
+    kbc_mouse(&k, 5, -3, 1);
+    CHECK_EQ(kbc_read(&k, 1) & 1, 0);
+    kbc_write(&k, 1, 0xD4); kbc_write(&k, 0, 0xF4);
+    CHECK_EQ(kbc_read(&k, 0), 0xFA);
+    kbc_mouse(&k, 5, -3, 1);
+    CHECK_EQ(kbc_read(&k, 0), 0x29);                             /* 0x08 | sin | segno di y */
+    CHECK_EQ(kbc_read(&k, 0), 5);
+    CHECK_EQ(kbc_read(&k, 0), 0xFD);
 }
 
 int main(void)

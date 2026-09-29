@@ -31,9 +31,12 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   slices of 2000 instructions), `mc.c` (MC: registers, RPSS, RAM banks from
   MEMCFG, VDMA fill), `hpc3.c` (HPC3 + IOC + INT3 routing), and one file per
   chip: `pit8254`, `z85c30`, `ds1386`, `eeprom93`, `kbc8042`, `wd33c93`,
-  and `scsi_dev` (disk / CD-ROM on an image file, 512-byte blocks).
-  Each chip is standalone (no `Indy` dependency) and tested in
-  `tests/test_devices.c`. Coming: Newport/REX3, Seeq, HAL2, `src/frontend` Win32.
+  `scsi_dev` (disk / CD-ROM on an image file, 512-byte blocks) and `newport`
+  (graphics). Each chip is standalone (no `Indy` dependency) and tested in
+  `tests/test_devices.c`. Coming: Seeq, HAL2.
+- `src/frontend/indy_win32.c` the window (`indy.exe`): one loop that runs a
+  frame of emulated time, redraws only when the Newport changed (`gen`),
+  sleeps to stay at real time. `png.c` comes from ArchieEmu.
 - `tools/mipsdis.c` disassembles a binary (PROM): `mipsdis FILE BASE FROM COUNT`.
 - `ref/` (git-ignored) holds the Linux IP22 headers and drivers downloaded as
   documentation; read them, never copy code.
@@ -194,7 +197,49 @@ R4400:
 - The Ethernet address is in the DS1386 NVRAM at 0x13A (base 0x40 +
   NVOFF_ENET 250). If it is zero the PROM creates no `eaddr` and the IRIX
   kernel dies at start (NULL in the MAC parser); indy_boot writes
-  08:00:69:0E:AF:65 when missing.
+  08:00:69:0E:AF:65 when missing and then fixes the checksum
+  (`rtc_fix_checksum`: 256 bytes from 0x40, skip byte 0, rotate left then
+  XOR, start 0x8B — derived from two valid NVRAMs). A wrong checksum makes
+  the PROM reinitialise the whole environment.
+- WD33C93 chunked transfers: IRIX programs the transfer count for one HPC3
+  descriptor chain (~256 KB) even when the command asks for more (fsck reads
+  2.2 MB at once). When the count ends in the data phase the chip pauses with
+  status 0x49/0x48 (unexpected phase, data in/out) and the command phase
+  register must read **0x45**; IRIX then reloads count and DMA and resumes
+  Select-and-Transfer. With 0x41 IRIX resets the bus; finishing early makes
+  fsck print "CAN NOT BLOCK READ" forever (thousands of lines on the
+  graphical textport = what made the graphical boot look slow).
+
+## Newport facts (checked against the PROM and the IRIX X server)
+
+- REX3 at `0x1F0F0000`: "set" registers at +0, "go" at +0x800 (the write also
+  starts the command), config registers at +0x1300/+0x1B00, DCB (VC2, CMAP,
+  XMAP9, BT445...) through dcbmode 0x238 / dcbdata0 0x240: slave in bits
+  10:7, CRS in 6:4, width in 1:0 (0 = 4 bytes); a write moves the top N bytes
+  of the access, a read returns them right-justified.
+- Register widths come from the PROM's own register test (breakpoint on its
+  compare with `--bp BFC08A38` / `BFC08AD4`): coordinates are fixed point in
+  bits 26:7 (integer 26:11), `xstarti` & co. clear the fraction; slopes
+  (0x210-0x21C) are sign-magnitude; see the masks in `rex_write`.
+- Board id: CMAP revision register (CRS 6): bit 7 = 8 planes, 6:4 board rev.
+- Framebuffer is 1344 wide; the visible area starts at column 8 (the PROM
+  uses xywin 0x1008). Rows wrap at 1024 (the PROM draws row 1024 = row 0).
+- XMAP9 mode register: pixel depth in bits 11:10 (1 = 8 bit), mode in 9:8
+  (0 = CI, else RGB), colormap bank (msb) in 7:3. CI uses `cmap[msb<<8 | pix]`;
+  banks 0x1D-0x1F are gamma ramps; cursor colours at `(curs_msb << 5) | v`.
+- DID tables: VC2 register 5 points to one pointer per display line; each
+  line is a list of `(x << 5) | DID` ending with 0xFFFF, x in framebuffer
+  columns. X uses different XMAP modes per window (root CI bank 0x12, the
+  login panel 8-bit RGB): without DIDs the X screen is black.
+- Host data (CHOST): HD bits 9:8 of drawmode1 and RWPCKD give pixels per
+  word, MSB first; RWDBL means every go on hostrw0 draws hostrw0 and then
+  hostrw1 (X writes hostrw1 once). At the end of a block row the rest of the
+  word is discarded (X starts each row on a new word): continuing into the
+  next row smears text and icons.
+- Fast clear (drawmode1 FCLR) uses colorvram; X and the PROM use it.
+- Profiling helpers: `--nptrace N [--nptrace-after M]` prints commands,
+  indy_boot prints commands per (drawmode0, drawmode1) with pixel counts, the
+  rdtsc time spent in Newport accesses, fast-MMU flushes.
 
 ## Lessons learned
 
@@ -220,7 +265,11 @@ R4400:
 3. SCSI and IRIX on the serial console — done: the PROM boots `sash` and
    `/unix` from `disks/irix53.img`, IRIX 5.3 reaches multi-user and a root
    shell (hinv, df, ps work). About 200 MIPS, i.e. 2x a 100 MHz Indy.
-4. Newport: the graphical PROM, then the X server and the desktop (4Dwm).
-5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq).
+4. Newport and window — done: graphical PROM, X login, Indigo Magic desktop;
+   `indy.exe` window with PS/2 keyboard and mouse, real time (100 MIPS
+   capped; ~200 MIPS available). Open: overlay/popup planes and the pup
+   colormap are guesses, XL24, lines/stipples barely tested, IRIX keyboard
+   layout.
+5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.

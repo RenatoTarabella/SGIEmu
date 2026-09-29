@@ -151,6 +151,7 @@ static void fast_fill(R4k *c, uint64_t va, uint64_t pa, int wr)
 
 void r4k_fast_flush(R4k *c)
 {
+    c->flushes++;
     memset(c->fast, 0xFF, sizeof c->fast);
 }
 

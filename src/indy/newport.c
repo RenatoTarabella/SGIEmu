@@ -162,6 +162,7 @@ static int to_screen(const Newport *n, int wx, int wy, int *sx, int *sy)
 
 static void put_pixel(Newport *n, int wx, int wy, uint32_t src)
 {
+    n->pixels++;
     int sx, sy;
     if (!to_screen(n, wx, wy, &sx, &sy)) return;
     uint32_t dm1 = n->drawmode1, dmask = depth_mask(dm1);
@@ -348,12 +349,21 @@ static uint32_t read_pixels(Newport *n)
     return w;
 }
 
-static void go(Newport *n, int kind)
+static void go_body(Newport *n, int kind)
 {
     uint32_t dm0 = n->drawmode0;
     int op = (int)(dm0 & DM0_OPMASK), am = DM0_AM(dm0);
     n->draws++;
-    if (n->trace > 0 && op) {                          /* --nptrace: tutti i comandi */
+    n->gen++;
+    {
+        int slot = -1;
+        for (int k = 0; k < 32; k++)
+            if (n->prof[k].n && n->prof[k].dm0 == dm0 && n->prof[k].dm1 == n->drawmode1 && n->prof[k].kind == (uint32_t)kind) { slot = k; break; }
+            else if (!n->prof[k].n && slot < 0) { slot = k; n->prof[k].dm0 = dm0; n->prof[k].dm1 = n->drawmode1; n->prof[k].kind = (uint32_t)kind; break; }
+        if (slot >= 0) { n->prof[slot].n++; n->prof[slot].px -= n->pixels; }
+        n->prof_slot = slot;
+    }
+    if (n->trace > 0 && op && n->draws > n->trace_after) {  /* --nptrace N [--nptrace-after M] */
         n->trace--;
         fprintf(stderr, "[go k%d dm0=%08X dm1=%08X (%d,%d)-(%d,%d) host=%08X ci=%X win=%08X clip=%X mv=%X]\n",
                 kind, dm0, n->drawmode1, n->xstart, n->ystart, n->xend, n->yend, n->hostrw0,
@@ -367,6 +377,12 @@ static void go(Newport *n, int kind)
     } else {
         draw_line(n);
     }
+}
+
+static void go(Newport *n, int kind)
+{
+    go_body(n, kind);
+    if (n->prof_slot >= 0) n->prof[n->prof_slot].px += n->pixels;
 }
 
 /* ---- Display Control Bus ---- */
@@ -387,6 +403,7 @@ static void dcb_next(Newport *n)
 
 static void dcb_write(Newport *n, uint32_t data, int nb)
 {
+    n->gen++;                                                     /* palette, modi, cursore */
     int slave = (int)(n->dcbmode >> 7) & 15, crs = (int)(n->dcbmode >> 4) & 7;
     switch (slave) {
     case 0:                                                       /* VC2 */
@@ -638,6 +655,7 @@ static uint32_t creg_read(Newport *n, uint32_t off)
 
 static void creg_write(Newport *n, uint32_t off, uint32_t v)
 {
+    n->gen++;
     switch (off) {
     case C_TOPSCAN:  n->topscan = v & 0x3FF; break;
     case C_XYWIN:    n->xywin = v; break;
@@ -746,18 +764,27 @@ void np_render(const Newport *n, uint32_t *out)
         uint16_t list = n->vc2_ram[(did_table + y) & 0x7FFF];
         uint16_t e = did_table ? n->vc2_ram[list & 0x7FFF] : 0xFFFF;
         uint32_t mode = n->xmap_mode[0];
-        int next_x = 0, k = 0;
-        for (int fx = NP_X0; fx < NP_X0 + NP_W; fx++) {
-            while (did_table && fx >= next_x && k < 64) {            /* spans della riga */
-                if (e == 0xFFFF) { next_x = 1 << 30; break; }
-                if ((int)(e >> 5) > fx) { next_x = e >> 5; break; }
+        int k = 0, fx = NP_X0;
+        while (fx < NP_X0 + NP_W) {
+            /* tratto [fx, end) con lo stesso modo */
+            int end = NP_X0 + NP_W;
+            while (did_table && k < 64 && e != 0xFFFF) {
+                if ((int)(e >> 5) > fx) { if ((int)(e >> 5) < end) end = e >> 5; break; }
                 mode = n->xmap_mode[e & 31];
                 e = n->vc2_ram[(list + ++k) & 0x7FFF];
             }
-            uint32_t c;
-            if (pup[fx]) c = n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF];
-            else c = expand(n, src[fx], mode);
-            dst[fx - NP_X0] = cmap_rgb(c);
+            if (((mode >> 10) & 3) == 1 && !((mode >> 8) & 3)) {     /* CI a 8 bit: banco diretto */
+                const uint32_t *bank = n->cmap + ((((mode >> 3) & 0x1F) << 8) & 0x1FFF);
+                for (; fx < end; fx++)
+                    dst[fx - NP_X0] = pup[fx] ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF]
+                                              : bank[src[fx] & 0xFF];
+            } else {
+                for (; fx < end; fx++) {
+                    uint32_t c = pup[fx] ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF]
+                                         : expand(n, src[fx], mode);
+                    dst[fx - NP_X0] = cmap_rgb(c);
+                }
+            }
         }
     }
     /* cursore del VC2: 32x32 a 2 bit, due piani uno dopo l'altro */
