@@ -77,6 +77,11 @@ int  pm_map_io(PhysMem *pm, uint32_t base, uint32_t size, void *ctx,
 int  pm_read (PhysMem *pm, uint64_t pa, int size, uint64_t *val);
 int  pm_write(PhysMem *pm, uint64_t pa, int size, uint64_t val);
 
+/* Blocchi per il DMA dei dispositivi (big-endian = ordine dei byte in
+   memoria). Ritornano i byte trasferiti; si fermano dove non c'e' RAM. */
+uint32_t pm_dma_read (PhysMem *pm, uint64_t pa, uint8_t *dst, uint32_t len);
+uint32_t pm_dma_write(PhysMem *pm, uint64_t pa, const uint8_t *src, uint32_t len);
+
 /* Nome del dispositivo che serve pa (per i log), o NULL. */
 const char *pm_io_name(const PhysMem *pm, uint64_t pa);
 

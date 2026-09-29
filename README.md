@@ -3,22 +3,24 @@
 An emulator for the Silicon Graphics Indy workstation aimed at running IRIX
 **fast** rather than cycle-exact. Written in C99, built with MSVC 2022 and CMake.
 
-Status: **stage 2 — the Indy PROM runs**: power-on diagnostics, the System
-Maintenance Menu and the Command Monitor work on the serial console.
+Status: **IRIX 5.3 boots to a root shell on the serial console.** The Indy
+PROM runs its diagnostics, loads `sash` and the kernel from an emulated SCSI
+disk, and IRIX comes up multi-user (no graphics yet):
 
 ```
->> version
-PROM Monitor SGI Version 5.3 Rev B10 R4X00/R5000 IP24 Feb 12, 1996 (BE)
->> hinv
-                   System: IP22
-                Processor: 100 Mhz R4400, with FPU
-              Memory size: 64 Mbytes
+IRIX Release 5.3 IP22 Version 11091812 System V
+IRIS login: root
+IRIS 1# uname -a
+IRIX IRIS 5.3 11091812 IP22 mips
+IRIS 3# df -k
+/dev/root   efs 7108596  261111 6847485   4%  /
 ```
 
 Emulated so far: the CPU (below), the MC memory controller (RAM banks, RPSS,
 VDMA), HPC3, IOC with INT3 interrupts and the 8254 timer, the Z85C30 serial
 port, the DS1386 clock with the NVRAM environment, the 8042 keyboard
-controller, the 93CS56 EEPROM and a first WD33C93 SCSI controller.
+controller, the 93CS56 EEPROM, the WD33C93 SCSI controllers with HPC3 DMA,
+and SCSI disks / CD-ROMs on image files.
 
 The CPU:
 

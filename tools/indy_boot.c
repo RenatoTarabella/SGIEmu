@@ -8,7 +8,8 @@
  *
  * La console seriale va su stdout. --keys scrive i caratteri sulla seriale
  * (sul canale che ha trasmesso per ultimo) dopo un secondo emulato, uno
- * ogni 2 ms; {CR} e' l'invio, {WAIT} aspetta mezzo secondo. Alla fine un
+ * ogni 2 ms; {CR} e' l'invio, {WAIT} aspetta mezzo secondo, {T=190} fino al
+ * secondo emulato 190. Alla fine un
  * riassunto: dove e' la CPU, le eccezioni, gli accessi a dispositivi che
  * non ci sono ancora.
  */
@@ -22,7 +23,9 @@ static Indy M;
 static long exc_print_left = 20;
 static int last_tx_ch = 1;
 static int col0 = 1;
-static int mc_log;
+static int mc_log, scsi_log, nv_log, ndisk;
+static const char *disk_path[8], *cdrom_path;
+static uint64_t dis_addr;
 
 /* ---- accessi senza dispositivo ---- */
 typedef struct IoPage { uint32_t page; uint64_t reads, writes; } IoPage;
@@ -55,6 +58,14 @@ static void io_log(Indy *m, int write, uint32_t pa, int size, uint64_t val)
     }
 }
 
+static void scsi_cmd_log(void *user, int id, const uint8_t *cdb, int status, uint32_t len)
+{
+    (void)user;
+    if (!col0) { printf("\n"); col0 = 1; }
+    printf("  scsi %d: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X -> stato %d, %u byte\n", id,
+           cdb[0], cdb[1], cdb[2], cdb[3], cdb[4], cdb[5], cdb[6], cdb[7], cdb[8], cdb[9], status, len);
+}
+
 static void on_exc(R4k *c, int code, void *user)
 {
     (void)user;
@@ -62,8 +73,10 @@ static void on_exc(R4k *c, int code, void *user)
     if (exc_print_left > 0) {
         exc_print_left--;
         if (!col0) { printf("\n"); col0 = 1; }
-        printf("  exc %-5s EPC=%016llX BadVAddr=%016llX\n", r4k_exc_names[code],
+        printf("  exc %-5s EPC=%016llX BadVAddr=%016llX", r4k_exc_names[code],
                (unsigned long long)c->cp0[CP0_EPC], (unsigned long long)c->cp0[CP0_BADVADDR]);
+        if (code == EXC_DBE || code == EXC_IBE) printf(" fisico=%08X", M.last_berr);
+        printf("\n");
     }
 }
 
@@ -132,6 +145,11 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--io") && v) { io_print_left = atol(v); k++; }
         else if (!strcmp(a, "--exc") && v) { exc_print_left = atol(v); k++; }
         else if (!strcmp(a, "--mc")) mc_log = 1;
+        else if (!strcmp(a, "--scsi")) scsi_log = 1;
+        else if (!strcmp(a, "--nvlog")) nv_log = 1;
+        else if (!strcmp(a, "--dis") && v) { dis_addr = strtoull(v, NULL, 16); k++; }
+        else if (!strcmp(a, "--disk") && v) { disk_path[ndisk++ & 7] = v; k++; }
+        else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; k++; }
         else usage();
     }
     if (!prom_path) usage();
@@ -145,8 +163,27 @@ int main(int argc, char **argv)
         memcpy(M.rtc.ram + 14, nv + 14, DS1386_SIZE - 14);      /* l'ora resta quella dell'host */
         printf("NVRAM %s\n", nvram_path);
     }
+    /* indirizzo Ethernet (NVOFF_ENET): senza, la PROM non crea eaddr e il
+       kernel di IRIX si ferma all'avvio */
+    static const uint8_t mac[6] = { 0x08, 0x00, 0x69, 0x0E, 0xAF, 0x65 };
+    int has_mac = 0;
+    for (int k = 0; k < 6; k++) has_mac |= M.rtc.ram[NVRAM_ENET + k];
+    if (!has_mac) memcpy(M.rtc.ram + NVRAM_ENET, mac, 6);
     M.io_log = io_log;
     M.mc_log = mc_log;
+    M.scsi_log = scsi_log;
+    M.rtc_log = nv_log;
+    if (scsi_log) M.scsi.log = scsi_cmd_log;
+    /* dischi a partire dall'ID 1 (dksc(0,1) e' il disco di sistema), CD-ROM al 4 */
+    for (int k = 0; k < ndisk; k++)
+        if (indy_attach_scsi(&M, 1 + k + (k >= 3), SCSI_DISK, disk_path[k], 0))
+            { printf("non riesco ad aprire %s\n", disk_path[k]); return 1; }
+        else printf("SCSI %d: disco %s (%llu MB)\n", 1 + k + (k >= 3), disk_path[k],
+                    (unsigned long long)(M.disk[1 + k + (k >= 3)].blocks >> 11));
+    if (cdrom_path) {
+        if (indy_attach_scsi(&M, 4, SCSI_CDROM, cdrom_path, 1)) { printf("non riesco ad aprire %s\n", cdrom_path); return 1; }
+        printf("SCSI 4: CD-ROM %s\n", cdrom_path);
+    }
     M.cpu.exc_hook = on_exc;
     M.scc.tx = on_tx;
     printf("PROM %s: %ld byte, RAM %u MB\n", prom_path, prom_size, ram_mb);
@@ -166,6 +203,10 @@ int main(int argc, char **argv)
         if (*kp && M.cpu.icount >= next_key) {
             if (!strncmp(kp, "{CR}", 4)) { scc_rx(&M.scc, last_tx_ch, '\r'); kp += 4; next_key += 2 * per_ms; }
             else if (!strncmp(kp, "{WAIT}", 6)) { kp += 6; next_key += 500 * per_ms; }
+            else if (!strncmp(kp, "{T=", 3)) {                  /* {T=190}: aspetta il secondo 190 */
+                next_key = strtoull(kp + 3, NULL, 10) * 1000 * per_ms;
+                kp = strchr(kp, '}') ? strchr(kp, '}') + 1 : kp + 3;
+            }
             else { scc_rx(&M.scc, last_tx_ch, (uint8_t)*kp++); next_key += 2 * per_ms; }
         }
         uint64_t chunk = trace > 0 ? 1 : per_ms;
@@ -184,6 +225,15 @@ int main(int argc, char **argv)
         printf("  %-4s %016llX  %-4s %016llX  %-4s %016llX  %-4s %016llX\n",
                r4k_reg_names[i], (unsigned long long)c->r[i], r4k_reg_names[i + 1], (unsigned long long)c->r[i + 1],
                r4k_reg_names[i + 2], (unsigned long long)c->r[i + 2], r4k_reg_names[i + 3], (unsigned long long)c->r[i + 3]);
+    if (dis_addr) {                                /* --dis: 48 istruzioni da li' */
+        uint64_t a = (uint64_t)(int64_t)(int32_t)dis_addr;
+        for (int j = 0; j < 48; j++, a += 4) {
+            uint64_t w; char b[96];
+            if (!r4k_peek(&M.cpu, a, 4, &w)) break;
+            r4k_disasm(a, (uint32_t)w, b, sizeof b);
+            printf("  %08llX  %08X  %s\n", (unsigned long long)(uint32_t)a, (uint32_t)w, b);
+        }
+    }
     printf("eccezioni:");
     for (int k = 0; k < 32; k++)
         if (c->exc_count[k]) printf(" %s=%llu", r4k_exc_names[k], (unsigned long long)c->exc_count[k]);

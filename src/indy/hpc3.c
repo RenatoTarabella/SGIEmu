@@ -5,12 +5,14 @@
  * Offset dalla base 0x1FB80000:
  *   0x30000  istat0, gio_misc, eeprom, istat1, bestat
  *   0x40000  WD33C93 del SCSI 0: SASR a +3, SCMD a +7
+ *   0x48000  WD33C93 del SCSI 1: sull'Indy non ha dispositivi
  *   0x54000  registri esterni ethernet (Seeq 8003)   - non ancora
  *   0x58000  PBUS, 16 canali da 0x400: canale 6 = IOC (0x1FBD9800)
  *   0x5C000  configurazione DMA/PIO del PBUS
  *   0x60000  DS1386: un byte ogni 4 (nel byte basso della parola)
  * I registri dell'IOC sono byte nel byte basso di parole da 32 bit.
  */
+#include <stdio.h>
 #include <string.h>
 #include "indy/indy.h"
 
@@ -18,6 +20,7 @@
 #define IOC_OFF   0x59800u
 #define RTC_OFF   0x60000u
 #define SCSI0_OFF 0x40000u
+#define SCSI1_OFF 0x48000u
 
 enum {
     IOC_UART_B_CTRL = 0x30, IOC_UART_B_DATA = 0x34, IOC_UART_A_CTRL = 0x38,
@@ -29,6 +32,47 @@ enum {
     INT_CMEPOL = 0x9C, INT_TCLEAR = 0xA0, INT_ERRSTAT = 0xA4,
     INT_PIT = 0xB0
 };
+
+/* ---- DMA SCSI 0: catena di descrittori {pbuf, cntinfo, pnext} ---- */
+
+#define SCSI0_NDPTR 0x10004u
+#define SCSI0_CTRL  0x11004u
+#define SCTRL_DIR     0x04              /* 1 = dalla memoria al dispositivo */
+#define SCTRL_ACTIVE  0x10
+#define SCTRL_CRESET  0x40
+#define DESC_EOX      0x80000000u
+
+static uint32_t rd32(Indy *m, uint32_t pa)
+{
+    uint64_t v = 0;
+    pm_read(&m->pm, pa, 4, &v);
+    return (uint32_t)v;
+}
+
+static long scsi_dma(void *user, uint8_t *buf, uint32_t len, int to_mem)
+{
+    Indy *m = user;
+    uint32_t *ctrl = &m->hpc_regs[SCSI0_CTRL >> 2], *nd = &m->hpc_regs[SCSI0_NDPTR >> 2];
+    if (!(*ctrl & SCTRL_ACTIVE)) return -1;
+    uint32_t desc = *nd, moved = 0;
+    int guard = 0;
+    while (moved < len && guard++ < 65536) {
+        uint32_t pbuf = rd32(m, desc), cnt = rd32(m, desc + 4), next = rd32(m, desc + 8);
+        uint32_t n = cnt & 0x3FFF, k = n < len - moved ? n : len - moved;
+        if (k) {
+            if (to_mem) pm_dma_write(&m->pm, pbuf, buf + moved, k);
+            else pm_dma_read(&m->pm, pbuf, buf + moved, k);
+            moved += k;
+        }
+        if (k < n) break;                                 /* descrittore usato a meta' */
+        desc = next;
+        if (cnt & DESC_EOX) { *ctrl &= ~SCTRL_ACTIVE; break; }
+    }
+    *nd = desc;
+    if (moved >= len) *ctrl &= ~SCTRL_ACTIVE;
+    if (m->scsi_log) fprintf(stderr, "[scsi dma %s %u byte]\n", to_mem ? "->mem" : "<-mem", moved);
+    return (long)moved;
+}
 
 void indy_hpc3_init(Indy *m)
 {
@@ -44,6 +88,9 @@ void indy_hpc3_init(Indy *m)
     scc_reset(&m->scc);
     kbc_reset(&m->kbc);
     wd_reset(&m->scsi);
+    m->scsi.dma = scsi_dma;
+    m->scsi.user = m;
+    wd_reset(&m->scsi1);
 }
 
 /* ---- interrupt ---- */
@@ -56,6 +103,7 @@ void indy_update_irq(Indy *m)
     if (kbc_irq(&m->kbc)) map |= MAP_KBD;
     ioc->map_raw = map;
     if (m->scsi.irq) ioc->lio0_raw |= L0_SCSI0; else ioc->lio0_raw &= (uint8_t)~L0_SCSI0;
+    if (m->scsi1.irq) ioc->lio0_raw |= L0_SCSI1; else ioc->lio0_raw &= (uint8_t)~L0_SCSI1;
     uint8_t l0 = ioc->lio0_raw | ((map & ioc->cmeimask0) ? L0_MAP0 : 0);
     uint8_t l1 = ioc->lio1_raw | ((map & ioc->cmeimask1) ? L1_MAP1 : 0);
     r4k_set_irq(&m->cpu, IRQ_LOCAL0, (l0 & ioc->imask0) != 0);
@@ -180,8 +228,13 @@ static uint32_t hpc_read32(Indy *m, uint32_t off)
         return (m->hpc_eeprom & ~0x10u) | (ee_dout(&m->eeprom_hpc) ? 0x10u : 0);
     case 0x30010: return 0;                                     /* bestat */
     default:
-        if (off >= RTC_OFF && off < RTC_OFF + 4 * DS1386_SIZE)
-            return rtc_read(&m->rtc, (int)((off - RTC_OFF) >> 2), indy_now_ns(m));
+        if (off >= RTC_OFF && off < RTC_OFF + 4 * DS1386_SIZE) {
+            int reg = (int)((off - RTC_OFF) >> 2);
+            uint8_t v = rtc_read(&m->rtc, reg, indy_now_ns(m));
+            if (m->rtc_log && reg >= 14)
+                fprintf(stderr, "[nvram %04X -> %02X pc=%llX]\n", reg, v, (unsigned long long)m->cpu.pc);
+            return v;
+        }
         if (off < 0x30000 || (off >= 0x5C000 && off < RTC_OFF))  /* DMA e configurazione */
             return m->hpc_regs[off >> 2];
         if (m->io_log) m->io_log(m, 0, HPC_BASE + off, 4, 0);
@@ -202,8 +255,11 @@ static void hpc_write32(Indy *m, uint32_t off, uint32_t v)
             rtc_write(&m->rtc, (int)((off - RTC_OFF) >> 2), (uint8_t)v, indy_now_ns(m));
             return;
         }
+        if (off == SCSI0_CTRL && (v & SCTRL_CRESET)) wd_reset(&m->scsi);
         if (!(off < 0x30000 || (off >= 0x5C000 && off < RTC_OFF)) && m->io_log)
             m->io_log(m, 1, HPC_BASE + off, 4, v);
+        if (m->scsi_log && off >= 0x10000 && off < 0x14000)
+            fprintf(stderr, "[hpc3 %05X = %08X]\n", off, v);
         m->hpc_regs[(off >> 2) & 0x1FFFF] = v;
         return;
     }
@@ -218,6 +274,11 @@ int indy_hpc3_read(void *ctx, uint32_t pa, int size, uint64_t *val)
     if (size == 8) { off |= 4; size = 4; }
     if (off >= SCSI0_OFF && off < SCSI0_OFF + 0x4000) {
         *val = ((int)(off & 3) + size == 4) ? wd_read(&m->scsi, (int)((off - SCSI0_OFF) >> 2) & 1) : 0;
+        indy_update_irq(m);
+        return 0;
+    }
+    if (off >= SCSI1_OFF && off < SCSI1_OFF + 0x4000) {   /* secondo canale: vuoto */
+        *val = ((int)(off & 3) + size == 4) ? wd_read(&m->scsi1, (int)((off - SCSI1_OFF) >> 2) & 1) : 0;
         indy_update_irq(m);
         return 0;
     }
@@ -240,6 +301,11 @@ int indy_hpc3_write(void *ctx, uint32_t pa, int size, uint64_t val)
     if (size == 8) { off |= 4; size = 4; }
     if (off >= SCSI0_OFF && off < SCSI0_OFF + 0x4000) {
         if ((int)(off & 3) + size == 4) wd_write(&m->scsi, (int)((off - SCSI0_OFF) >> 2) & 1, (uint8_t)val);
+        indy_update_irq(m);
+        return 0;
+    }
+    if (off >= SCSI1_OFF && off < SCSI1_OFF + 0x4000) {
+        if ((int)(off & 3) + size == 4) wd_write(&m->scsi1, (int)((off - SCSI1_OFF) >> 2) & 1, (uint8_t)val);
         indy_update_irq(m);
         return 0;
     }

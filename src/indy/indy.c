@@ -17,6 +17,7 @@ static int gio_read(void *ctx, uint32_t pa, int size, uint64_t *val)
     *val = 0;
     m->mc.gerr = pa;
     m->mc.gstat |= 0x400;               /* GIO timeout */
+    m->last_berr = pa;
     return 1;
 }
 
@@ -74,14 +75,27 @@ int indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb)
     m->pm.unmapped_write = unmapped_write;
     m->pm.unmapped_ctx = m;
 
+    wd_init(&m->scsi);
+    wd_init(&m->scsi1);
+    if (!m->scsi.buf || !m->scsi1.buf) return -1;
     rtc_init(&m->rtc, (int64_t)time(NULL));
     for (int k = 0; k < 128; k++) m->eeprom.data[k] = m->eeprom_hpc.data[k] = 0xFFFF;
     indy_reset(m);
     return 0;
 }
 
+int indy_attach_scsi(Indy *m, int id, int type, const char *path, int readonly)
+{
+    if (id < 0 || id > 7 || scsi_dev_open(&m->disk[id], type, path, readonly)) return -1;
+    m->scsi.dev[id] = &m->disk[id];
+    return 0;
+}
+
 void indy_free(Indy *m)
 {
+    for (int k = 0; k < 8; k++) scsi_dev_close(&m->disk[k]);
+    free(m->scsi.buf);
+    free(m->scsi1.buf);
     r4k_free(&m->cpu);
     pm_free(&m->pm);
     for (int b = 0; b < 4; b++) free(m->bank[b]);

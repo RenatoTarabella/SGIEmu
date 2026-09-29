@@ -135,3 +135,34 @@ int pm_write(PhysMem *pm, uint64_t pa, int size, uint64_t val)
     if (io) return io->write(io->ctx, (uint32_t)pa, size, val);
     return pm->unmapped_write(pm->unmapped_ctx, (uint32_t)pa, size, val);
 }
+
+uint32_t pm_dma_read(PhysMem *pm, uint64_t pa, uint8_t *dst, uint32_t len)
+{
+    uint32_t done = 0;
+    while (done < len) {
+        uint8_t *h = pm_host(pm, pa + done);
+        if (!h) break;
+        uint32_t n = PM_PAGE_SIZE - (uint32_t)((pa + done) & PM_PAGE_MASK);
+        if (n > len - done) n = len - done;
+        memcpy(dst + done, h, n);
+        done += n;
+    }
+    return done;
+}
+
+uint32_t pm_dma_write(PhysMem *pm, uint64_t pa, const uint8_t *src, uint32_t len)
+{
+    uint32_t done = 0;
+    while (done < len) {
+        uint64_t a = pa + done;
+        uint8_t *h = pm_host(pm, a);
+        if (!h || !(pm->flags[a >> PM_PAGE_SHIFT] & PM_RAM)) break;
+        uint32_t n = PM_PAGE_SIZE - (uint32_t)(a & PM_PAGE_MASK);
+        if (n > len - done) n = len - done;
+        if ((pm->flags[a >> PM_PAGE_SHIFT] & PM_CODE) && pm->code_write)
+            pm->code_write(pm->code_ctx, (uint32_t)a);
+        memcpy(h, src + done, n);
+        done += n;
+    }
+    return done;
+}

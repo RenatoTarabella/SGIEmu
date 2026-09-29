@@ -30,10 +30,10 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
 - `src/indy` the machine: `indy.c` (assembly, physical map, run loop in
   slices of 2000 instructions), `mc.c` (MC: registers, RPSS, RAM banks from
   MEMCFG, VDMA fill), `hpc3.c` (HPC3 + IOC + INT3 routing), and one file per
-  chip: `pit8254`, `z85c30`, `ds1386`, `eeprom93`, `kbc8042`, `wd33c93`.
+  chip: `pit8254`, `z85c30`, `ds1386`, `eeprom93`, `kbc8042`, `wd33c93`,
+  and `scsi_dev` (disk / CD-ROM on an image file, 512-byte blocks).
   Each chip is standalone (no `Indy` dependency) and tested in
-  `tests/test_devices.c`. Coming: Newport/REX3, SCSI devices, Seeq, HAL2,
-  `src/frontend` Win32.
+  `tests/test_devices.c`. Coming: Newport/REX3, Seeq, HAL2, `src/frontend` Win32.
 - `tools/mipsdis.c` disassembles a binary (PROM): `mipsdis FILE BASE FROM COUNT`.
 - `ref/` (git-ignored) holds the Linux IP22 headers and drivers downloaded as
   documentation; read them, never copy code.
@@ -66,9 +66,10 @@ cmake --build build --config Release
 build\Release\test_r4k.exe                  # must print "0 falliti"
 .venv\Scripts\python tests\diff_unicorn.py [cases] [seed] [category]
 build\Release\test_r4k.exe --bench          # MIPS of the interpreter
-build\Release	est_devices.exe            # chips one by one
-build\Release\indy_boot.exe --prom roms\ip24prom.bin [--ms 5000] [--keys "..."] [--trace N]
-                             [--trace-at ADDR] [--io N] [--exc N] [--mc] [--ram MB] [--nvram FILE]
+build\Release\test_devices.exe            # chips one by one
+build\Release\indy_boot.exe --prom roms\ip24prom.bin [--disk IMG] [--cdrom ISO] [--ms 5000]
+                             [--keys "..."] [--trace N] [--trace-at ADDR] [--io N] [--exc N]
+                             [--mc] [--scsi] [--nvlog] [--dis ADDR] [--ram MB] [--nvram FILE]
 ```
 
 `indy_boot` prints the serial console on stdout. `--keys` types on the
@@ -78,8 +79,23 @@ menu appears after about 6 s emulated, so start with a dozen `{WAIT}`:
 ```
 indy_boot --prom roms\ip24prom.bin --ms 12000 --io 0 --exc 0 --keys "{WAIT}x12 5{CR}{WAIT}{WAIT}hinv{CR}"
 ```
-(write the twelve `{WAIT}` out). `--io` prints accesses to hardware that
-doesn't exist yet, `--mc` every MC register write, `--exc` exceptions.
+(write the twelve `{WAIT}` out). `{T=190}` waits until second 190 emulated.
+`--io` prints accesses to hardware that doesn't exist yet, `--mc` every MC
+register write, `--exc` exceptions (with the physical address of bus
+errors), `--scsi` every SCSI command and DMA, `--nvlog` NVRAM reads,
+`--dis ADDR` disassembles 48 instructions of the final memory.
+
+Boot IRIX 5.3 from the installed disk to a root shell (about 2 minutes real):
+
+```
+indy_boot --prom roms\ip24prom.bin --disk disks\irix53.img --ms 235000 --io 0 --exc 0
+          --keys "{T=7}1{CR}{T=200}root{CR}{T=203}{CR}{T=206}uname -a{CR}{T=208}hinv{CR}"
+```
+
+`disks\irix53.img` is modified by IRIX (logs, autoconfig rebuilt `/unix`);
+the pristine copy is `D:\SGI_mame0256s\irix53.chd` (`chdman extracthd`).
+Other disks: `D:\Mame\SGI\ULTRA64_2GIG_SCSI_IRIX53_confirmed2.img` (raw,
+IRIX 5.3 with the N64 kit) and `D:\Mame\SGI\irix65.chd` (IRIX 6.5, XFS).
 
 Categories of the diff: `alu muldiv trap mem branch fpu misc`. Run 100k+
 cases with a couple of seeds after touching the CPU (100k takes ~25 s).
@@ -168,9 +184,25 @@ R4400:
   clocks counters 0 and 1.
 - No graphics board: the PROM says "Cannot open video() for output" and uses
   the serial console; GIO reads must give a bus error (the probe expects it).
+- HPC3 SCSI DMA channel 0: NDPTR at HPC3+0x10004, CTRL at +0x11004 (ACTIVE
+  0x10, DIR 0x04 = memory to device, the opposite of the Linux header
+  comment; CRESET 0x40). Descriptors {pbuf, cntinfo (count 0x3FFF, EOX
+  bit 31), pnext}. The PROM and IRIX use select-and-transfer (0x08): the
+  target status goes in the Target LUN register, WD status 0x16.
+- IRIX probes a second WD33C93 at `0x1FBC8000` and then uses it without a
+  protected access: it must exist (with no devices), not bus-error.
+- The Ethernet address is in the DS1386 NVRAM at 0x13A (base 0x40 +
+  NVOFF_ENET 250). If it is zero the PROM creates no `eaddr` and the IRIX
+  kernel dies at start (NULL in the MAC parser); indy_boot writes
+  08:00:69:0E:AF:65 when missing.
 
 ## Lessons learned
 
+- **Backslashes in shell commands on this machine**: the Bash tool turns
+  `\\n` (and `\t`, `\\`) into real control characters even inside quoted
+  heredocs, which breaks C string literals and Windows paths written from
+  inline Python or sed. Edit such text with the Edit tool, or write the
+  Python to a `.py` file with the Write tool first.
 - MSVC: with `#pragma fenv_access(on)`, `isnan(NAN)` on a value built from
   the `NAN` macro was false: test NaNs on the bit patterns, never via `NAN`.
 - `r4k_stop` from an exception hook inside `service()` must be honoured
@@ -185,8 +217,10 @@ R4400:
    Command Monitor on the serial console (`hinv`, `printenv`, `date`).
    Open: hinv reports a 128 KB secondary cache (should be 1 MB); CPU speed
    is shown as 100 MHz (ns_per_insn = 10).
-3. Newport minimal: the graphical PROM and its menu.
-4. SCSI (WD33C93) and disk: sash / fx, install IRIX from CD image.
-5. IRIX multi-user, then the desktop.
+3. SCSI and IRIX on the serial console — done: the PROM boots `sash` and
+   `/unix` from `disks/irix53.img`, IRIX 5.3 reaches multi-user and a root
+   shell (hinv, df, ps work). About 200 MIPS, i.e. 2x a 100 MHz Indy.
+4. Newport: the graphical PROM, then the X server and the desktop (4Dwm).
+5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq).
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.

@@ -4,6 +4,7 @@
  * WD33C93, controller di tastiera 8042.
  */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "indy/eeprom93.h"
 #include "indy/pit8254.h"
@@ -147,6 +148,50 @@ static void test_wd(void)
     CHECK_EQ(wd_read(&w, 1), 0x42);                      /* timeout di selezione */
 }
 
+/* disco su un file temporaneo, READ(10) del blocco 2 letto dal registro dati */
+static void test_scsi_disk(void)
+{
+    printf("disco SCSI\n");
+    const char *path = "test_scsi_disk.img";
+    FILE *f = fopen(path, "wb");
+    for (int b = 0; b < 8; b++) for (int k = 0; k < 512; k++) fputc((b * 16 + k) & 0xFF, f);
+    fclose(f);
+    static ScsiDev d;
+    static Wd33c93 w;
+    CHECK_EQ(scsi_dev_open(&d, SCSI_DISK, path, 0), 0);
+    CHECK_EQ(d.blocks, 8);
+    wd_init(&w);
+    w.dev[1] = &d;
+    static const uint8_t cdb[10] = { 0x28, 0, 0, 0, 0, 2, 0, 0, 1, 0 };
+    wd_write(&w, 0, WD_CDB1);
+    for (int k = 0; k < 10; k++) wd_write(&w, 1, cdb[k]);          /* autoincremento */
+    wd_write(&w, 0, WD_COUNT_HI); wd_write(&w, 1, 0); wd_write(&w, 1, 2); wd_write(&w, 1, 0);
+    wd_write(&w, 1, 1);                                              /* DEST_ID = 1 */
+    wd_write(&w, 0, WD_COMMAND); wd_write(&w, 1, 0x08);              /* select-and-transfer */
+    CHECK_EQ(wd_read(&w, 0) & 0x01, 1);                              /* DBR: dati pronti */
+    wd_write(&w, 0, WD_DATA);
+    int ok = 1;
+    for (int k = 0; k < 512; k++) ok &= wd_read(&w, 1) == ((32 + k) & 0xFF);
+    CHECK_EQ(ok, 1);
+    CHECK_EQ(wd_read(&w, 0) & 0x80, 0x80);                           /* interrupt di fine */
+    wd_write(&w, 0, WD_TARGET_LUN);
+    CHECK_EQ(wd_read(&w, 1), 0);                                      /* stato GOOD */
+    wd_write(&w, 0, WD_STATUS);
+    CHECK_EQ(wd_read(&w, 1), 0x16);
+    /* blocco fuori dal disco: CHECK CONDITION, poi REQUEST SENSE */
+    static const uint8_t bad[10] = { 0x28, 0, 0, 0, 0, 100, 0, 0, 1, 0 };
+    uint32_t len = 512;
+    CHECK_EQ(scsi_dev_exec(&d, bad, w.buf, &len), SCSI_CHECK_CONDITION);
+    static const uint8_t rs[6] = { 0x03, 0, 0, 0, 18, 0 };
+    len = 18;
+    scsi_dev_exec(&d, rs, w.buf, &len);
+    CHECK_EQ(w.buf[2], 5);
+    CHECK_EQ(w.buf[12], 0x21);
+    scsi_dev_close(&d);
+    free(w.buf);
+    remove(path);
+}
+
 static void test_kbc(void)
 {
     printf("8042\n");
@@ -171,6 +216,7 @@ int main(void)
     test_rtc();
     test_scc();
     test_wd();
+    test_scsi_disk();
     test_kbc();
     printf("%d controlli, %d falliti\n", checks, failures);
     return failures != 0;

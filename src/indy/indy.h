@@ -77,21 +77,28 @@ typedef struct Indy {
     Ds1386   rtc;
     Kbc8042  kbc;
     Wd33c93  scsi;                     /* SCSI 0, a 0x1FBC0000 */
+    Wd33c93  scsi1;                    /* SCSI 1, a 0x1FBC8000, vuoto */
+    ScsiDev  disk[8];                  /* dispositivi collegati, per ID */
     Eeprom93 eeprom;                   /* 93CS56 sul registro EEPROM dell'MC */
     Eeprom93 eeprom_hpc;               /* e quello sull'HPC3 (Indigo2) */
 
     uint32_t ns_per_insn;
     int      power_off;                /* la PROM o il sistema hanno spento */
+    uint32_t last_berr;                /* indirizzo fisico dell'ultimo bus error */
 
     /* log degli accessi a dispositivi che non ci sono */
     long     io_log_left;
     int      mc_log;                   /* stampa le scritture dell'MC */
+    int      scsi_log;                 /* stampa comandi SCSI e DMA */
+    int      rtc_log;                  /* stampa le letture della NVRAM */
     void   (*io_log)(struct Indy *m, int write, uint32_t pa, int size, uint64_t val);
 } Indy;
 
 int  indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb);
 void indy_free(Indy *m);
 void indy_reset(Indy *m);
+/* collega un'immagine al bus SCSI 0 (type SCSI_DISK o SCSI_CDROM): 0 = ok */
+int  indy_attach_scsi(Indy *m, int id, int type, const char *path, int readonly);
 /* Esegue n istruzioni (a fette, aggiornando i dispositivi). */
 uint64_t indy_run(Indy *m, uint64_t n);
 

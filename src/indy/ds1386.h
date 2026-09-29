@@ -12,6 +12,7 @@
 #include <stdint.h>
 
 #define DS1386_SIZE 8192
+#define NVRAM_ENET  0x13A        /* indirizzo Ethernet: base NVRAM 0x40 + NVOFF_ENET 250 */
 
 typedef struct Ds1386 {
     uint8_t  ram[DS1386_SIZE];

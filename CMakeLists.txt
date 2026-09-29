@@ -43,6 +43,7 @@ add_library(indycore STATIC
     src/indy/eeprom93.c
     src/indy/kbc8042.c
     src/indy/wd33c93.c
+    src/indy/scsi_dev.c
 )
 target_link_libraries(indycore r4kcore)
 
