@@ -1,0 +1,14 @@
+# materiale protetto da copyright: non ridistribuibile
+roms/
+cdrom/
+disks/
+*.iso
+*.bin
+*.img
+
+# build e file generati
+build/
+.venv/
+__pycache__/
+*.pyc
+/*.png
