@@ -27,6 +27,7 @@
 #include "indy/eeprom93.h"
 #include "indy/kbc8042.h"
 #include "indy/wd33c93.h"
+#include "indy/newport.h"
 
 /* linee di interrupt della CPU (r4k_set_irq): IP2..IP7 */
 enum { IRQ_LOCAL0 = 0, IRQ_LOCAL1 = 1, IRQ_TIMER0 = 2, IRQ_TIMER1 = 3, IRQ_BUSERR = 4 };
@@ -79,6 +80,9 @@ typedef struct Indy {
     Wd33c93  scsi;                     /* SCSI 0, a 0x1FBC0000 */
     Wd33c93  scsi1;                    /* SCSI 1, a 0x1FBC8000, vuoto */
     ScsiDev  disk[8];                  /* dispositivi collegati, per ID */
+    Newport  gfx;                      /* grafica Newport a 0x1F0F0000 */
+    int      has_gfx;
+    uint64_t next_vblank;              /* ns del prossimo retrace verticale */
     Eeprom93 eeprom;                   /* 93CS56 sul registro EEPROM dell'MC */
     Eeprom93 eeprom_hpc;               /* e quello sull'HPC3 (Indigo2) */
 
@@ -91,10 +95,12 @@ typedef struct Indy {
     int      mc_log;                   /* stampa le scritture dell'MC */
     int      scsi_log;                 /* stampa comandi SCSI e DMA */
     int      rtc_log;                  /* stampa le letture della NVRAM */
+    long     gfx_log;                  /* accessi alla Newport da stampare */
     void   (*io_log)(struct Indy *m, int write, uint32_t pa, int size, uint64_t val);
 } Indy;
 
-int  indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb);
+/* gfx: 0 = nessuna scheda grafica, 8 = XL8, 24 = XL24 */
+int  indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb, int gfx);
 void indy_free(Indy *m);
 void indy_reset(Indy *m);
 /* collega un'immagine al bus SCSI 0 (type SCSI_DISK o SCSI_CDROM): 0 = ok */

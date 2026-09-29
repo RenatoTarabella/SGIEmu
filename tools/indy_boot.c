@@ -18,14 +18,20 @@
 #include <string.h>
 #include "indy/indy.h"
 #include "cpu/r4k_disasm.h"
+#include "frontend/png.h"
 
 static Indy M;
 static long exc_print_left = 20;
 static int last_tx_ch = 1;
 static int col0 = 1;
 static int mc_log, scsi_log, nv_log, ndisk;
+static long np_log, np_trace;
 static const char *disk_path[8], *cdrom_path;
 static uint64_t dis_addr;
+static const char *png_path, *save_nvram;
+static uint64_t bp_addr;
+static long bp_left = 200;
+static int gfx = 8;
 
 /* ---- accessi senza dispositivo ---- */
 typedef struct IoPage { uint32_t page; uint64_t reads, writes; } IoPage;
@@ -147,7 +153,13 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--mc")) mc_log = 1;
         else if (!strcmp(a, "--scsi")) scsi_log = 1;
         else if (!strcmp(a, "--nvlog")) nv_log = 1;
+        else if (!strcmp(a, "--nplog") && v) { np_log = atol(v); k++; }
+        else if (!strcmp(a, "--nptrace") && v) { np_trace = atol(v); k++; }
         else if (!strcmp(a, "--dis") && v) { dis_addr = strtoull(v, NULL, 16); k++; }
+        else if (!strcmp(a, "--png") && v) { png_path = v; k++; }
+        else if (!strcmp(a, "--bp") && v) { bp_addr = strtoull(v, NULL, 16); k++; }
+        else if (!strcmp(a, "--save-nvram") && v) { save_nvram = v; k++; }
+        else if (!strcmp(a, "--gfx") && v) { gfx = !strcmp(v, "none") ? 0 : atoi(v); k++; }
         else if (!strcmp(a, "--disk") && v) { disk_path[ndisk++ & 7] = v; k++; }
         else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; k++; }
         else usage();
@@ -157,7 +169,7 @@ int main(int argc, char **argv)
     long prom_size, nv_size;
     uint8_t *prom = load_file(prom_path, &prom_size);
     if (!prom) { printf("non trovo la PROM %s\n", prom_path); return 1; }
-    if (indy_init(&M, prom, (uint32_t)prom_size, ram_mb)) { printf("memoria\n"); return 1; }
+    if (indy_init(&M, prom, (uint32_t)prom_size, ram_mb, gfx)) { printf("memoria\n"); return 1; }
     uint8_t *nv = load_file(nvram_path, &nv_size);
     if (nv && nv_size == DS1386_SIZE) {
         memcpy(M.rtc.ram + 14, nv + 14, DS1386_SIZE - 14);      /* l'ora resta quella dell'host */
@@ -168,11 +180,13 @@ int main(int argc, char **argv)
     static const uint8_t mac[6] = { 0x08, 0x00, 0x69, 0x0E, 0xAF, 0x65 };
     int has_mac = 0;
     for (int k = 0; k < 6; k++) has_mac |= M.rtc.ram[NVRAM_ENET + k];
-    if (!has_mac) memcpy(M.rtc.ram + NVRAM_ENET, mac, 6);
+    if (!has_mac) { memcpy(M.rtc.ram + NVRAM_ENET, mac, 6); rtc_fix_checksum(&M.rtc); }
     M.io_log = io_log;
     M.mc_log = mc_log;
     M.scsi_log = scsi_log;
     M.rtc_log = nv_log;
+    M.gfx_log = np_log;
+    M.gfx.trace = np_trace;
     if (scsi_log) M.scsi.log = scsi_cmd_log;
     /* dischi a partire dall'ID 1 (dksc(0,1) e' il disco di sistema), CD-ROM al 4 */
     for (int k = 0; k < ndisk; k++)
@@ -193,6 +207,20 @@ int main(int argc, char **argv)
     uint64_t next_key = 1000 * per_ms;
     const char *kp = keys;
     while (done < total && !M.power_off) {
+        if (bp_addr) {                                  /* --bp: a passi, stampa i registri */
+            uint64_t stop = done + per_ms;
+            while (done < stop && done < total && !M.power_off) {
+                if ((uint32_t)M.cpu.pc == (uint32_t)bp_addr && bp_left > 0) {
+                    bp_left--;
+                    printf("  bp %08llX:", (unsigned long long)(uint32_t)M.cpu.pc);
+                    for (int i = 1; i < 32; i++)
+                        if (M.cpu.r[i]) printf(" %s=%llX", r4k_reg_names[i], (unsigned long long)M.cpu.r[i]);
+                    printf("\n");
+                }
+                done += indy_run(&M, 1);
+            }
+            continue;
+        }
         if (trace > 0 && (!trace_at || M.cpu.pc == trace_at)) {
             trace_at = 0;
             trace_one(&M.cpu);
@@ -233,6 +261,15 @@ int main(int argc, char **argv)
             r4k_disasm(a, (uint32_t)w, b, sizeof b);
             printf("  %08llX  %08X  %s\n", (unsigned long long)(uint32_t)a, (uint32_t)w, b);
         }
+    }
+    if (save_nvram) {
+        FILE *nf = fopen(save_nvram, "wb");
+        if (nf) { fwrite(M.rtc.ram, 1, DS1386_SIZE, nf); fclose(nf); printf("NVRAM salvata in %s\n", save_nvram); }
+    }
+    if (png_path && M.has_gfx) {
+        static uint32_t screen[NP_W * NP_H];
+        np_render(&M.gfx, screen);
+        if (png_write(png_path, screen, NP_W, NP_H, 1) == 0) printf("schermo in %s\n", png_path);
     }
     printf("eccezioni:");
     for (int k = 0; k < 32; k++)

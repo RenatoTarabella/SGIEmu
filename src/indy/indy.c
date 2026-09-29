@@ -1,6 +1,7 @@
 /*
  * indy.c - Montaggio della macchina e ciclo di esecuzione
  */
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -45,7 +46,31 @@ static int unmapped_write(void *ctx, uint32_t pa, int size, uint64_t val)
     return 0;
 }
 
-int indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb)
+static int np_io_read(void *ctx, uint32_t pa, int size, uint64_t *val)
+{
+    Indy *m = ctx;
+    *val = np_read(&m->gfx, pa - 0x1F0F0000u, size);
+    if (m->gfx_log > 0) {
+        m->gfx_log--;
+        fprintf(stderr, "[np R%d %04X -> %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
+                (unsigned long long)*val, (unsigned long long)m->cpu.pc);
+    }
+    return 0;
+}
+
+static int np_io_write(void *ctx, uint32_t pa, int size, uint64_t val)
+{
+    Indy *m = ctx;
+    if (m->gfx_log > 0) {
+        m->gfx_log--;
+        fprintf(stderr, "[np W%d %04X = %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
+                (unsigned long long)val, (unsigned long long)m->cpu.pc);
+    }
+    np_write(&m->gfx, pa - 0x1F0F0000u, size, val);
+    return 0;
+}
+
+int indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb, int gfx)
 {
     memset(m, 0, sizeof *m);
     m->ns_per_insn = 10;                /* 100 milioni di istruzioni al secondo emulato */
@@ -69,6 +94,11 @@ int indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb)
     pm_map_ram(&m->pm, PROM_BASE, m->prom_size, m->prom, PM_ROM);
     pm_map_io(&m->pm, 0x1F000000u, 0x00A00000u, m, gio_read, gio_write, "GIO");
     pm_map_io(&m->pm, 0x1FA00000u, 0x00020000u, m, indy_mc_read, indy_mc_write, "MC");
+    if (gfx) {
+        if (np_init(&m->gfx, gfx == 24)) return -1;
+        m->has_gfx = 1;
+        pm_map_io(&m->pm, 0x1F0F0000u, 0x00010000u, m, np_io_read, np_io_write, "Newport");
+    }
     pm_map_io(&m->pm, 0x1FB00000u, 0x00080000u, m, gio_read, gio_write, "HPC3#1");
     pm_map_io(&m->pm, 0x1FB80000u, 0x00080000u, m, indy_hpc3_read, indy_hpc3_write, "HPC3");
     m->pm.unmapped_read = unmapped_read;
@@ -96,6 +126,7 @@ void indy_free(Indy *m)
     for (int k = 0; k < 8; k++) scsi_dev_close(&m->disk[k]);
     free(m->scsi.buf);
     free(m->scsi1.buf);
+    if (m->has_gfx) np_free(&m->gfx);
     r4k_free(&m->cpu);
     pm_free(&m->pm);
     for (int b = 0; b < 4; b++) free(m->bank[b]);
@@ -108,6 +139,7 @@ void indy_reset(Indy *m)
     indy_mc_init(m);
     indy_hpc3_init(m);
     indy_mc_remap(m);
+    if (m->has_gfx) np_reset(&m->gfx);
     m->power_off = 0;
     indy_update_irq(m);
 }
@@ -118,6 +150,13 @@ static void service(Indy *m)
     uint64_t now = indy_now_ns(m);
     for (int k = 0; k < 2; k++)
         if (pit_poll(&m->pit, k, now)) m->ioc.timer_irq[k] = 1;
+    if (m->has_gfx) {
+        if (now >= m->next_vblank) {                  /* retrace a 60 Hz */
+            np_vblank(&m->gfx);
+            m->next_vblank = now + 1000000000u / 60;
+        }
+        if (m->gfx.irq) m->ioc.map_raw |= MAP_VRETRACE; else m->ioc.map_raw &= (uint8_t)~MAP_VRETRACE;
+    }
     indy_update_irq(m);
 }
 

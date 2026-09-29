@@ -12,7 +12,8 @@
 #include <stdint.h>
 
 #define DS1386_SIZE 8192
-#define NVRAM_ENET  0x13A        /* indirizzo Ethernet: base NVRAM 0x40 + NVOFF_ENET 250 */
+#define NVRAM_BASE  0x40         /* ambiente della PROM: 256 byte, il primo e' il checksum */
+#define NVRAM_ENET  0x13A        /* indirizzo Ethernet: NVRAM_BASE + NVOFF_ENET 250 */
 
 typedef struct Ds1386 {
     uint8_t  ram[DS1386_SIZE];
@@ -23,5 +24,6 @@ typedef struct Ds1386 {
 void    rtc_init(Ds1386 *r, int64_t host_time);
 uint8_t rtc_read(Ds1386 *r, int reg, uint64_t now_ns);
 void    rtc_write(Ds1386 *r, int reg, uint8_t v, uint64_t now_ns);
+void    rtc_fix_checksum(Ds1386 *r);
 
 #endif

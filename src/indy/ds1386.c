@@ -62,6 +62,19 @@ static void regs_to_clock(Ds1386 *r, uint64_t now_ns)
     r->base_s = t - (int64_t)(now_ns / 1000000000u);
 }
 
+/* Checksum dell'ambiente della PROM: 256 byte da NVRAM_BASE, saltando il
+   byte del checksum; rotazione a sinistra e XOR, partendo da 0x8B.
+   Ricavato da due NVRAM valide (quella di MAME e una scritta dalla PROM). */
+void rtc_fix_checksum(Ds1386 *r)
+{
+    uint8_t c = 0x8B;
+    for (int off = 1; off < 256; off++) {
+        c = (uint8_t)((c << 1) | (c >> 7));
+        c ^= r->ram[NVRAM_BASE + off];
+    }
+    r->ram[NVRAM_BASE] = c;
+}
+
 void rtc_init(Ds1386 *r, int64_t host_time)
 {
     r->base_s = host_time;
