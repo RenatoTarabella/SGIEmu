@@ -270,6 +270,17 @@ R4400:
    capped; ~200 MIPS available). Open: overlay/popup planes and the pup
    colormap are guesses, XL24, lines/stipples barely tested, IRIX keyboard
    layout.
+   **Open bugs seen by the user in `indy.exe`** (screenshot 2026-09-29):
+   - Console floods "ng1: pixel dma timeout" / "ng1 pixel dma write timeout":
+     GL (buttonfly, desktop background) moves pixels with the MC VDMA
+     between memory and GIO/Newport; `vdma_start` in `mc.c` only does fill
+     mode. Next thing to implement (MC regs at 0x1FA02000, see the DMA
+     enum; GIO side = Newport hostrw via the DMA GIO address).
+   - buttonfly drawn wrong (solid red/green areas), desktop background with
+     bands of dithered noise: probably VDMA + unhandled REX3 modes.
+   - A key produced `^[[088q` in the Console: some key (Ctrl/Alt/F-key?)
+     translated wrong by `kbc8042.c` / `indy_win32.c`.
+   - Window drops to ~49 MIPS during the timeouts (target 100).
 5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.
