@@ -377,5 +377,12 @@ R4400:
    PROM `keybd` variable set to the Italian layout plus dropping the fake
    LCtrl that Windows sends before RAlt in `indy_win32.c` — not done yet.
 5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
+   CD-ROM: works (automount on /CDROM, `inst` installed the demos).
+   IRIX 6.5: `disks/irix65.img` (2 GB, from `D:/Mame/SGI/irix65.chd` with
+   `chdman extracthd`) is "IRIX Release 6.5 IP22" (2003) with Blender 1.0
+   on the desktop. With `--ram 128` it reaches the graphical login in
+   ~200 s emulated, the desktop as root, and a login on the serial
+   console ("IRIS console login", answer the TERM prompt first);
+   `shutdown -y -g0` is clean. Not yet explored: apps, GL demos under 6.5.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.
