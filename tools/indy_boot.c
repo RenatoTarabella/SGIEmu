@@ -167,7 +167,7 @@ static void usage(void)
 int main(int argc, char **argv)
 {
     const char *prom_path = NULL, *nvram_path = "roms/nvram/rtc", *keys = "";
-    unsigned ram_mb = 64;
+    unsigned ram_mb = 64, mips = 0;
     uint64_t ms = 5000, trace_at = 0;
     long trace = 0;
     for (int k = 1; k < argc; k++) {
@@ -175,6 +175,7 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--prom") && v) { prom_path = v; k++; }
         else if (!strcmp(a, "--nvram") && v) { nvram_path = v; k++; }
         else if (!strcmp(a, "--ram") && v) { ram_mb = (unsigned)atoi(v); k++; }
+        else if (!strcmp(a, "--mips") && v) { mips = (unsigned)atoi(v); k++; }
         else if (!strcmp(a, "--ms") && v) { ms = strtoull(v, NULL, 0); k++; }
         else if (!strcmp(a, "--keys") && v) { keys = v; k++; }
         else if (!strcmp(a, "--trace") && v) { trace = atol(v); k++; }
@@ -243,7 +244,8 @@ int main(int argc, char **argv)
     M.scc.tx = on_tx;
     printf("PROM %s: %ld byte, RAM %u MB\n", prom_path, prom_size, ram_mb);
 
-    const uint64_t per_ms = 1000000u / M.ns_per_insn;
+    if (mips) M.ps_per_insn = 1000000u / mips;
+    const uint64_t per_ms = indy_insn_per_ms(&M);
     uint64_t total = ms * per_ms, done = 0;
     uint64_t next_key = 1000 * per_ms;
     const char *kp = keys;

@@ -2,7 +2,7 @@
  * indy_win32.c - L'Indy in una finestra: schermo Newport, tastiera e mouse PS/2
  *
  *   indy [--prom FILE] [--disk IMG] [--disk2 IMG] [--cdrom ISO] [--ram MB]
- *        [--nvram FILE] [--gfx 8|24]
+ *        [--nvram FILE] [--gfx 8|24] [--mips N]
  *
  * Senza argomenti cerca roms\ip24prom.bin e disks\irix53.img. La NVRAM
  * (orologio e ambiente della PROM) si salva all'uscita in roms\nvram\indy.nvram;
@@ -234,7 +234,7 @@ static void fail(const char *msg)
 int main(int argc, char **argv)
 {
     const char *prom_path = NULL, *disk_path[2] = { NULL, NULL }, *cdrom_path = NULL, *nvram_arg = NULL;
-    unsigned ram_mb = 64;
+    unsigned ram_mb = 64, mips = 100;
     int gfx = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -245,6 +245,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--ram") && v) { ram_mb = (unsigned)atoi(v); i++; }
         else if (!strcmp(a, "--nvram") && v) { nvram_arg = v; i++; }
         else if (!strcmp(a, "--gfx") && v) { gfx = atoi(v); i++; }
+        else if (!strcmp(a, "--mips") && v) { mips = (unsigned)atoi(v); i++; }   /* CPU emulata piu' veloce */
     }
     /* la console seriale va nel terminale che ha lanciato il programma */
     if (AttachConsole(ATTACH_PARENT_PROCESS)) { freopen("CONOUT$", "w", stdout); printf("\n"); }
@@ -264,6 +265,7 @@ int main(int argc, char **argv)
     uint8_t *prom = load_file(prom_path, &prom_size);
     if (!prom) fail("Non riesco a leggere la PROM");
     if (indy_init(&app.m, prom, (uint32_t)prom_size, ram_mb, gfx)) fail("Memoria insufficiente");
+    if (mips >= 10 && mips <= 1000) app.m.ps_per_insn = 1000000u / mips;
     free(prom);
     app.m.scc.tx = on_tx;
 
@@ -318,7 +320,7 @@ int main(int argc, char **argv)
     ShowWindow(app.hwnd, SW_SHOW);
 
     timeBeginPeriod(1);
-    const uint64_t per_frame = 1000000000ull / FRAME_HZ / app.m.ns_per_insn;
+    const uint64_t per_frame = indy_insn_per_ms(&app.m) * 1000 / FRAME_HZ;
     double next = now_s(), last_title = next;
     uint64_t last_icount = app.m.cpu.icount;
     MSG msg;

@@ -10,7 +10,8 @@
  *   0x1FC00000  PROM
  *   0x20000000  RAM alta (banchi oltre i 256 MB)
  *
- * Il tempo e' quello della CPU: ns_per_insn nanosecondi per istruzione.
+ * Il tempo e' quello della CPU: ps_per_insn picosecondi per istruzione
+ * (10000 = 100 MIPS; con meno si emula una CPU piu' veloce).
  * I dispositivi calcolano il loro stato dal tempo quando vengono letti;
  * indy_run li aggiorna tra una fetta di istruzioni e l'altra per gli
  * interrupt.
@@ -93,7 +94,7 @@ typedef struct Indy {
     Eeprom93 eeprom;                   /* 93CS56 sul registro EEPROM dell'MC */
     Eeprom93 eeprom_hpc;               /* e quello sull'HPC3 (Indigo2) */
 
-    uint32_t ns_per_insn;
+    uint32_t ps_per_insn;              /* picosecondi per istruzione: 1e6 / MIPS */
     int      power_off;                /* la PROM o il sistema hanno spento */
     uint32_t last_berr;                /* indirizzo fisico dell'ultimo bus error */
 
@@ -117,7 +118,9 @@ int  indy_attach_scsi(Indy *m, int id, int type, const char *path, int readonly)
 /* Esegue n istruzioni (a fette, aggiornando i dispositivi). */
 uint64_t indy_run(Indy *m, uint64_t n);
 
-static inline uint64_t indy_now_ns(const Indy *m) { return m->cpu.icount * m->ns_per_insn; }
+static inline uint64_t indy_now_ns(const Indy *m) { return m->cpu.icount * m->ps_per_insn / 1000; }
+/* istruzioni per millisecondo emulato */
+static inline uint64_t indy_insn_per_ms(const Indy *m) { return 1000000000ull / m->ps_per_insn; }
 
 /* ricalcola le linee di interrupt della CPU */
 void indy_update_irq(Indy *m);

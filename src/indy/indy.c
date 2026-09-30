@@ -82,7 +82,7 @@ static int np_io_write(void *ctx, uint32_t pa, int size, uint64_t val)
 int indy_init(Indy *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb, int gfx)
 {
     memset(m, 0, sizeof *m);
-    m->ns_per_insn = 10;                /* 100 milioni di istruzioni al secondo emulato */
+    m->ps_per_insn = 10000;             /* 100 milioni di istruzioni al secondo emulato */
     uint32_t map = (prom_size + PM_PAGE_MASK) & ~PM_PAGE_MASK;
     m->prom = calloc(1, map ? map : PM_PAGE_SIZE);
     if (!m->prom) return -1;

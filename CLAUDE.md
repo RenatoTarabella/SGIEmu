@@ -361,7 +361,7 @@ R4400:
 2. PROM prompt — done: power-on diagnostics, System Maintenance Menu and
    Command Monitor on the serial console (`hinv`, `printenv`, `date`).
    Open: hinv reports a 128 KB secondary cache (should be 1 MB); CPU speed
-   is shown as 100 MHz (ns_per_insn = 10).
+   is shown as 100 MHz (ps_per_insn = 10000; `--mips N` changes it).
 3. SCSI and IRIX on the serial console — done: the PROM boots `sash` and
    `/unix` from `disks/irix53.img`, IRIX 5.3 reaches multi-user and a root
    shell (hinv, df, ps work). About 200 MIPS, i.e. 2x a 100 MHz Indy.
