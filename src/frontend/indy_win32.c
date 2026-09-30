@@ -146,6 +146,17 @@ static LRESULT CALLBACK wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_F11 && GetKeyState(VK_CONTROL) < 0) { if (down) capture_mouse(0); return 0; }
         int sc = (int)((lp >> 16) & 0xFF), ext = (int)((lp >> 24) & 1);
         if (wp == VK_PAUSE || sc == 0) return 0;
+        if (sc == 0x1D && !ext) {
+            /* AltGr: Windows manda un Ctrl sinistro finto subito prima
+               dell'Alt destro, con lo stesso istante; IRIX (disposizioni
+               europee) vuole solo l'Alt destro */
+            MSG next;
+            if (PeekMessageA(&next, hwnd, WM_KEYFIRST, WM_KEYLAST, PM_NOREMOVE) &&
+                (next.message == WM_KEYDOWN || next.message == WM_SYSKEYDOWN ||
+                 next.message == WM_KEYUP || next.message == WM_SYSKEYUP) &&
+                next.wParam == VK_MENU && ((next.lParam >> 24) & 1) && next.time == (DWORD)GetMessageTime())
+                return 0;
+        }
         kbc_key(&app.m.kbc, sc, ext, down);
         indy_update_irq(&app.m);
         return 0;

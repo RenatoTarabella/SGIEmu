@@ -101,7 +101,7 @@ centre (640,512).
 Graphical boot to the desktop and a program in the root Console (~2 min real):
 
 ```
-indy_boot --prom roms\ip24prom.bin --nvram roms\nvram\indy.nvram --disk disks\irix53.img
+indy_boot --prom roms\ip24prom.bin --nvram roms\nvram\indy-us.nvram --disk disks\irix53.img
           --ms 230000 --io 0 --exc 0 --kbd --png shot
           --keys "{T=160}root{CR}{T=205}{M=-400,280,0}{M=0,0,1}{M=0,0,0}{WAIT}
                   cd /usr/demos{CR}bin/buttonfly &{CR}{T=225}{PNG}"
@@ -372,11 +372,21 @@ R4400:
    Shutdown with power off), GL demos (flight, atlantis, ideas_ogl with
    Gouraud, blast). Open: overlay planes, XL24, stipples/blending barely
    tested, VDMA zoom, the exact REX3 dither matrix.
-   **Keyboard layout**: IRIX uses the US layout. On non-US keyboards (the user's is
-   Spanish) AltGr (Windows sends LCtrl + RAlt) reaches IRIX as Ctrl+Alt+key
-   and xwsh prints `^[[NNNq` (Alt+a = 087; `^[[088q` came from this). Fix:
-   PROM `keybd` variable set to the Italian layout plus dropping the fake
-   LCtrl that Windows sends before RAlt in `indy_win32.c` — not done yet.
+   **Keyboard layout**: the PROM variable `keybd` (NVRAM 0xFA, i.e. env
+   offset 0xBA) selects the X keymap (`/usr/lib/X11/input/PC/ES.xkm`,
+   IT, GB, DE, FR...), read at boot. Set it from IRIX as root with
+   `nvram keybd ES` and reboot: X then gives n-tilde, `"` on Shift+2, `@` on
+   AltGr+2. Writing it ourselves does not work: `rtc_fix_checksum` only
+   matches NVRAMs with an empty keybd (IRIX's checksum with keybd=ES is 43,
+   the formula gives 6; the real algorithm is still unknown). The window's
+   `roms
+vram\indy.nvram` now has keybd=ES (written by IRIX; the user's
+   keyboard is Spanish); `roms
+vram\indy-us.nvram` is the US copy to use
+   with indy_boot, whose --keys typing assumes a US layout. Without keybd,
+   AltGr (Windows: fake LCtrl + RAlt) reached IRIX as Ctrl+Alt and xwsh
+   printed `^[[NNNq`; indy_win32.c now drops the fake LCtrl (same message
+   time as the RAlt that follows).
 5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
    CD-ROM: works (automount on /CDROM, `inst` installed the demos).
    IRIX 6.5: `disks/irix65.img` (2 GB, from `D:/Mame/SGI/irix65.chd` with
