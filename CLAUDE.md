@@ -119,6 +119,13 @@ indy_boot --prom roms\ip24prom.bin --disk disks\irix53.img --ms 235000 --io 0 --
 
 `disks\irix53.img` is modified by IRIX (logs, autoconfig rebuilt `/unix`);
 the pristine copy is `D:\SGI_mame0256s\irix53.chd` (`chdman extracthd`).
+The MAME install had only the buttonfly menus (`demos.sw.demos`); on
+2026-09-30 the full demos (games, tools, visualization: flight, atlantis,
+ideas, bz, ...) were installed from `cdrom\irix53.iso` with
+`inst -f /CDROM/dist/demos`, `install *`, `go` (the CD automounts on
+`/CDROM`). Copy from just before: `disks\irix53-backup.img`. End headless
+sessions that write to the disk with `shutdown -y -g0` (halts at the PROM
+"Okay to power off" panel).
 Other disks: `D:\Mame\SGI\ULTRA64_2GIG_SCSI_IRIX53_confirmed2.img` (raw,
 IRIX 5.3 with the N64 kit) and `D:\Mame\SGI\irix65.chd` (IRIX 6.5, XFS).
 
