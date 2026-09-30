@@ -300,6 +300,10 @@ R4400:
   test checks (both are kept: `slope[]` and `misc[]`). A colour channel is
   bits 19:11 of its register (above are float exponent/bias, not a sign):
   0-255 as is, 256-383 overshoot (255), 384-511 undershoot (0).
+- Lines without drawmode0 DOSETUP (0x20) do not recompute the line from
+  the end points: GL draws points that way (dm0 0x0A, only xstartf/ystartf
+  written with a 64-bit go), one pixel. Drawing to the stale xend/yend gave
+  the fans of rays converging on a corner in Meteor Blast.
 - Pattern commands (go on zpattern): with drawmode0 L32 (0x8000) at most 32
   pixels (X text, `0x9106`); without L32 but with STOPX they run to xend
   (GL `charstr` text, `0x1106`, one glyph row per command). Drawing one

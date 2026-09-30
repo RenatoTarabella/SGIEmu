@@ -33,6 +33,7 @@ enum {
 #define DM0_AM(x)    (((x) >> 2) & 7)
 #define AM_SPAN      0
 #define AM_BLOCK     1
+#define DM0_DOSETUP  0x00000020
 #define DM0_CHOST    0x00000040
 #define DM0_STOPX    0x00000100
 #define DM0_STOPY    0x00000200
@@ -392,6 +393,10 @@ static void draw_line(Newport *n)
 {
     uint32_t dm0 = n->drawmode0;
     int x0 = n->xstart, y0 = n->ystart, x1 = n->xend, y1 = n->yend;
+    /* senza DOSETUP il REX3 non ricalcola la linea dagli estremi: GL
+       disegna cosi' i punti (solo xstartf/ystartf), un pixel */
+    int setup = (dm0 & DM0_DOSETUP) != 0;
+    if (!setup) { x1 = x0; y1 = y0; }
     int dx = abs(x1 - x0), dy = -abs(y1 - y0);
     int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     int err = dx + dy, first = 1, k = 0;
@@ -417,8 +422,10 @@ static void draw_line(Newport *n)
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
-    n->xstart = n->xsave = n->xend;
-    n->ystart = n->yend;
+    if (setup) {
+        n->xstart = n->xsave = n->xend;
+        n->ystart = n->yend;
+    }
 }
 
 static void screen_to_screen(Newport *n)
