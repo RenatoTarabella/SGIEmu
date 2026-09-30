@@ -18,6 +18,7 @@
 
 #define HPC_BASE  0x1FB80000u
 #define IOC_OFF   0x59800u
+#define HAL2_OFF  0x58000u                 /* PBUS canale 0: audio */
 #define RTC_OFF   0x60000u
 #define SCSI0_OFF 0x40000u
 #define SCSI1_OFF 0x48000u
@@ -143,7 +144,10 @@ static uint8_t ioc_read(Indy *m, uint32_t reg)
     case IOC_UART_B_DATA: v = scc_read(&m->scc, 1, 1); break;
     case IOC_UART_A_CTRL: v = scc_read(&m->scc, 0, 0); break;
     case IOC_UART_A_DATA: v = scc_read(&m->scc, 0, 1); break;
-    case IOC_KBD_DATA:    v = kbc_read(&m->kbc, 0); break;
+    case IOC_KBD_DATA:
+        v = kbc_read(&m->kbc, 0);
+        if (m->kbd_log) fprintf(stderr, "[8042 R %02X t=%.3f pc=%llX]\n", v, indy_now_ns(m) / 1e9, (unsigned long long)m->cpu.pc);
+        break;
     case IOC_KBD_CMD:     v = kbc_read(&m->kbc, 1); break;
     case IOC_GCSEL:       return ioc->gcsel;
     case IOC_GENCTRL:     return ioc->genctrl;
@@ -186,8 +190,14 @@ static void ioc_write(Indy *m, uint32_t reg, uint8_t v)
     case IOC_UART_B_DATA: scc_write(&m->scc, 1, 1, v); break;
     case IOC_UART_A_CTRL: scc_write(&m->scc, 0, 0, v); break;
     case IOC_UART_A_DATA: scc_write(&m->scc, 0, 1, v); break;
-    case IOC_KBD_DATA:    kbc_write(&m->kbc, 0, v); break;
-    case IOC_KBD_CMD:     kbc_write(&m->kbc, 1, v); break;
+    case IOC_KBD_DATA:
+        if (m->kbd_log) fprintf(stderr, "[8042 W dato %02X t=%.3f pc=%llX]\n", v, indy_now_ns(m) / 1e9, (unsigned long long)m->cpu.pc);
+        kbc_write(&m->kbc, 0, v);
+        break;
+    case IOC_KBD_CMD:
+        if (m->kbd_log) fprintf(stderr, "[8042 W cmd %02X t=%.3f pc=%llX]\n", v, indy_now_ns(m) / 1e9, (unsigned long long)m->cpu.pc);
+        kbc_write(&m->kbc, 1, v);
+        break;
     case IOC_GCSEL:       ioc->gcsel = v; break;
     case IOC_GENCTRL:     ioc->genctrl = v; break;
     case IOC_PANEL:
@@ -291,6 +301,15 @@ int indy_hpc3_read(void *ctx, uint32_t pa, int size, uint64_t *val)
         uint32_t reg = (off - IOC_OFF) & ~3u;
         int lane = (int)(off & 3);
         *val = (lane + size == 4) ? ioc_read(m, reg) : 0;
+        return 0;
+    }
+    if ((off & ~0x3FFu) == HAL2_OFF) {
+        /* HAL2 (audio) non ancora emulato: la revisione col bit 15 dice
+           "audio assente". Con 0 IRIX crede di averlo e al primo suono il
+           driver gira per sempre ad aspettare un DMA che non avanza. */
+        uint32_t w = (off & 0x3FCu) == 0x20 ? 0x8000u : 0;
+        int sh = 8 * (int)(4 - size - (off & 3));
+        *val = size == 4 ? w : (w >> sh) & ((1u << (8 * size)) - 1);
         return 0;
     }
     uint32_t w = hpc_read32(m, off & ~3u);

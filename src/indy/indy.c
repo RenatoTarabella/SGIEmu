@@ -53,7 +53,11 @@ static int np_io_read(void *ctx, uint32_t pa, int size, uint64_t *val)
     uint64_t t0 = __rdtsc();
     *val = np_read(&m->gfx, pa - 0x1F0F0000u, size);
     m->np_calls++; m->np_ticks += __rdtsc() - t0;
-    if (m->gfx_log > 0) {
+    if (!m->gfx.irq && (m->ioc.lio1_raw & L1_RETRACE)) {     /* letto lo stato: retrace servito */
+        m->ioc.lio1_raw &= (uint8_t)~L1_RETRACE;
+        indy_update_irq(m);
+    }
+    if (m->gfx_log > 0 && m->gfx.draws >= m->gfx.trace_after) {       /* --nplog N, dopo --nptrace-after */
         m->gfx_log--;
         fprintf(stderr, "[np R%d %04X -> %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
                 (unsigned long long)*val, (unsigned long long)m->cpu.pc);
@@ -64,7 +68,7 @@ static int np_io_read(void *ctx, uint32_t pa, int size, uint64_t *val)
 static int np_io_write(void *ctx, uint32_t pa, int size, uint64_t val)
 {
     Indy *m = ctx;
-    if (m->gfx_log > 0) {
+    if (m->gfx_log > 0 && m->gfx.draws >= m->gfx.trace_after) {       /* --nplog N, dopo --nptrace-after */
         m->gfx_log--;
         fprintf(stderr, "[np W%d %04X = %llX pc=%llX]\n", size * 8, pa & 0xFFFF,
                 (unsigned long long)val, (unsigned long long)m->cpu.pc);
@@ -160,7 +164,12 @@ static void service(Indy *m)
             np_vblank(&m->gfx);
             m->next_vblank = now + 1000000000u / 60;
         }
-        if (m->gfx.irq) m->ioc.map_raw |= MAP_VRETRACE; else m->ioc.map_raw &= (uint8_t)~MAP_VRETRACE;
+        if (m->gfx.irq) m->ioc.lio1_raw |= L1_RETRACE; else m->ioc.lio1_raw &= (uint8_t)~L1_RETRACE;
+    }
+    if (m->mc.dma_irq_pending && now >= m->mc.dma_busy_until) {   /* VDMA finito */
+        m->mc.dma_irq_pending = 0;
+        m->mc.regs[0x164 >> 2] |= 0x08;
+        m->ioc.lio0_raw |= L0_MCDMA;
     }
     indy_update_irq(m);
 }

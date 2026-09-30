@@ -45,10 +45,12 @@ enum {
 /* drawmode1 */
 #define DM1_PLANES(x) ((x) & 7)
 #define DM1_DD(x)    (((x) >> 3) & 3)
+#define DM1_DBLSRC   0x00000020
 #define DM1_RWPCKD   0x00000080
 #define DM1_RWDBL    0x00000400
 #define DM1_HD(x)    (((x) >> 8) & 3)
 #define DM1_RGBMD    0x00008000
+#define DM1_DITHER   0x00010000
 #define DM1_FCLR     0x00020000
 #define DM1_LO(x)    ((x) >> 28)
 
@@ -121,19 +123,62 @@ static uint32_t logic_op(int op, uint32_t s, uint32_t d)
     }
 }
 
-/* colore da disegnare (CI o RGB impacchettato secondo la profondita') */
+/* RGB a 8 bit per canale -> pixel alla profondita' di disegno (1:2:1,
+   3:3:2, 4:4:4, 8:8:8, rosso nei bit bassi). Col dither (DM1_DITHER,
+   matrice 4x4 ordinata) il resto del troncamento si distribuisce. */
+static const uint8_t bayer4[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+
+static uint32_t chan(uint32_t c, int bits, int d)
+{
+    if (d >= 0 && (c += (uint32_t)d * (256u >> bits) / 16) > 255) c = 255;
+    return c >> (8 - bits);
+}
+
+static uint32_t pack_rgb(uint32_t dm1, uint32_t r, uint32_t g, uint32_t b, int x, int y)
+{
+    int d = (dm1 & DM1_DITHER) ? bayer4[y & 3][x & 3] : -1;
+    switch (DM1_DD(dm1)) {
+    case 0:  return chan(r, 1, d) | chan(g, 2, d) << 1 | chan(b, 1, d) << 3;
+    case 1:  return chan(r, 3, d) | chan(g, 3, d) << 3 | chan(b, 2, d) << 6;
+    case 2:  return chan(r, 4, d) | chan(g, 4, d) << 4 | chan(b, 4, d) << 8;
+    default: return r | g << 8 | b << 16;
+    }
+}
+
+/* il contrario, per le letture a 32 bit (lrectread) */
+static uint32_t unpack_rgb(uint32_t dm1, uint32_t p)
+{
+    uint32_t r, g, b;
+    switch (DM1_DD(dm1)) {
+    case 0:  r = (p & 1) * 255; g = ((p >> 1) & 3) * 85; b = ((p >> 3) & 1) * 255; break;
+    case 1:  r = (p & 7) * 255 / 7; g = ((p >> 3) & 7) * 255 / 7; b = ((p >> 6) & 3) * 85; break;
+    case 2:  r = (p & 15) * 17; g = ((p >> 4) & 15) * 17; b = ((p >> 8) & 15) * 17; break;
+    default: return p;
+    }
+    return r | g << 8 | b << 16;
+}
+
+/* colore da disegnare (CI o RGB impacchettato secondo la profondita', senza dither) */
 static uint32_t draw_color(const Newport *n)
 {
     uint32_t dm1 = n->drawmode1;
     if (dm1 & DM1_FCLR) return n->colorvram & depth_mask(dm1);   /* fast clear */
-    if (!(dm1 & DM1_RGBMD)) return n->colori & depth_mask(dm1);
-    uint32_t r = (n->colorred >> 11) & 0xFF, g = (n->colorgrn >> 11) & 0xFF, b = (n->colorblue >> 11) & 0xFF;
-    switch (DM1_DD(dm1)) {
-    case 0:  return (r >> 7) | ((g >> 6) << 1) | ((b >> 7) << 3);
-    case 1:  return (r >> 5) | ((g >> 5) << 3) | ((b >> 6) << 6);
-    case 2:  return (r >> 4) | ((g >> 4) << 4) | ((b >> 4) << 8);
-    default: return r | (g << 8) | (b << 16);
-    }
+    if (!(dm1 & DM1_RGBMD)) return (n->colorred >> 11) & 0xFFF & depth_mask(dm1);   /* CI: parte intera del rosso */
+    return pack_rgb(dm1 & ~DM1_DITHER, (n->colorred >> 11) & 0xFF, (n->colorgrn >> 11) & 0xFF,
+                    (n->colorblue >> 11) & 0xFF, 0, 0);
+}
+
+/* il colore del comando va calcolato pixel per pixel (dither) */
+static int color_dithered(const Newport *n)
+{
+    uint32_t dm1 = n->drawmode1;
+    return (dm1 & (DM1_RGBMD | DM1_DITHER | DM1_FCLR)) == (DM1_RGBMD | DM1_DITHER) && DM1_DD(dm1) < 3;
+}
+
+static uint32_t color_at(const Newport *n, int x, int y)
+{
+    return pack_rgb(n->drawmode1, (n->colorred >> 11) & 0xFF, (n->colorgrn >> 11) & 0xFF,
+                    (n->colorblue >> 11) & 0xFF, x, y);
 }
 
 static int inside(uint32_t mx, uint32_t my, int x, int y)
@@ -160,6 +205,19 @@ static int to_screen(const Newport *n, int wx, int wy, int *sx, int *sy)
     return 1;
 }
 
+/* Piani RGB/CI: un pixel a 4, 8 o 12 bit si ripete su tutti i piani
+   (doppio buffer: 4+4 bit sulla XL8, 12+12 sulla XL24) e wrmask sceglie
+   il buffer; in lettura DBLSRC prende il secondo. */
+static uint32_t replicate(uint32_t dm1, uint32_t v)
+{
+    switch (DM1_DD(dm1)) {
+    case 0:  return (v & 0xF) * 0x111111u;
+    case 1:  return (v & 0xFF) * 0x010101u;
+    case 2:  return (v & 0xFFF) | (v & 0xFFF) << 12;
+    default: return v;
+    }
+}
+
 static void put_pixel(Newport *n, int wx, int wy, uint32_t src)
 {
     n->pixels++;
@@ -171,7 +229,8 @@ static void put_pixel(Newport *n, int wx, int wy, uint32_t src)
     switch (DM1_PLANES(dm1)) {
     case 1: case 2: {
         uint32_t d = n->rgb[idx];
-        uint32_t v = logic_op((int)DM1_LO(dm1), src, d);
+        uint32_t v = logic_op((int)DM1_LO(dm1), replicate(dm1, src), d);
+        mask = n->wrmask & (n->planes24 ? 0xFFFFFFu : 0xFFu);
         n->rgb[idx] = (d & ~mask) | (v & mask);
         break;
     }
@@ -180,14 +239,16 @@ static void put_pixel(Newport *n, int wx, int wy, uint32_t src)
         n->olay[idx] = (uint8_t)((d & ~mask) | (v & mask));
         break;
     }
+    /* popup e CID: il valore a 2 bit si ripete su tutto il byte e wrmask
+       sceglie la coppia (X usa 0xCC: popup nei bit 3:2 e 7:6) */
     case 5: {
-        uint32_t d = n->pup[idx], v = logic_op((int)DM1_LO(dm1), src, d);
-        n->pup[idx] = (uint8_t)(((d & ~mask) | (v & mask)) & 3);
+        uint32_t d = n->pup[idx], v = logic_op((int)DM1_LO(dm1), (src & 3) * 0x55u, d);
+        n->pup[idx] = (uint8_t)((d & ~mask) | (v & mask));
         break;
     }
     case 6: {
-        uint32_t d = n->cid[idx], v = logic_op((int)DM1_LO(dm1), src, d);
-        n->cid[idx] = (uint8_t)(((d & ~mask) | (v & mask)) & 3);
+        uint32_t d = n->cid[idx], v = logic_op((int)DM1_LO(dm1), (src & 3) * 0x55u, d);
+        n->cid[idx] = (uint8_t)((d & ~mask) | (v & mask));
         break;
     }
     default: break;
@@ -201,11 +262,17 @@ static uint32_t get_pixel(const Newport *n, int wx, int wy)
     if (sy >= NP_H && sy < 2 * NP_H) sy -= NP_H;
     if (sx < 0 || sx >= NP_FBW || sy < 0 || sy >= NP_H) return 0;
     int idx = sy * NP_FBW + sx;
-    switch (DM1_PLANES(n->drawmode1)) {
+    uint32_t dm1 = n->drawmode1;
+    switch (DM1_PLANES(dm1)) {
     case 4:  return n->olay[idx];
     case 5:  return n->pup[idx];
     case 6:  return n->cid[idx];
-    default: return n->rgb[idx];
+    default: {
+        static const int shift[4] = { 4, 8, 12, 0 };
+        uint32_t p = n->rgb[idx];
+        if (DM1_DD(dm1) == 3) return p;
+        return (dm1 & DM1_DBLSRC ? p >> shift[DM1_DD(dm1)] : p) & depth_mask(dm1);
+    }
     }
 }
 
@@ -246,10 +313,16 @@ static void draw_block(Newport *n, int kind)
     int am = DM0_AM(dm0);
     int x = n->xstart, y = n->ystart;
     uint32_t fg = draw_color(n), bg = n->colorback & depth_mask(n->drawmode1);
-    uint32_t pat = n->zpattern;
+    uint32_t pat = n->zpattern, dm1 = n->drawmode1;
+    int dith = color_dithered(n);
+    /* dall'host in RGB a 32 bit (ABGR) verso una profondita' minore: si converte */
+    int hconv = kind == GO_HOST && (dm1 & DM1_RGBMD) && DM1_HD(dm1) == 3 && DM1_DD(dm1) < 3;
     uint32_t host[16];
     int nhost = 0;
-    if (kind == GO_HOST) {
+    if (kind == GO_HOST && n->hpx) {                          /* scrittura parziale */
+        nhost = n->nhpx;
+        memcpy(host, n->hpx, (size_t)nhost * sizeof *host);
+    } else if (kind == GO_HOST) {
         nhost = host_pixels(n, n->hostrw0, host);
         if (n->drawmode1 & DM1_RWDBL) nhost += host_pixels(n, n->hostrw1, host + nhost);   /* 64 bit */
     }
@@ -259,7 +332,8 @@ static void draw_block(Newport *n, int kind)
     long count = 0;
     int ydir = n->yend >= y ? 1 : -1;
     for (;;) {
-        uint32_t col = kind == GO_HOST ? host[count] : fg;
+        uint32_t col = kind == GO_HOST ? host[count] : dith ? color_at(n, x, y) : fg;
+        if (hconv) col = pack_rgb(dm1, col & 0xFF, (col >> 8) & 0xFF, (col >> 16) & 0xFF, x, y);
         int draw = 1;
         if (dm0 & DM0_ZPENAB) {
             int bit = kind == GO_PATTERN ? (int)(count & 31) : (int)((x - n->xsave) & 31);
@@ -290,11 +364,12 @@ static void draw_line(Newport *n)
     int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
     int err = dx + dy, first = 1, k = 0;
     uint32_t fg = draw_color(n), bg = n->colorback & depth_mask(n->drawmode1);
+    int dith = color_dithered(n);
     for (;;) {
         int last = x0 == x1 && y0 == y1;
         int skip = (first && (dm0 & DM0_SK1ST)) || (last && (dm0 & DM0_SKLST));
         if (!skip) {
-            uint32_t col = fg;
+            uint32_t col = dith ? color_at(n, x0, y0) : fg;
             int draw = 1;
             if (dm0 & DM0_ZPENAB) {
                 if (!((n->zpattern >> (31 - (k & 31))) & 1)) { if (dm0 & DM0_ZOPQ) col = bg; else draw = 0; }
@@ -341,6 +416,7 @@ static uint32_t read_pixels(Newport *n)
     int x = n->xstart, y = n->ystart, ydir = n->yend >= y ? 1 : -1;
     for (int k = 0; k < cnt; k++) {
         uint32_t p = get_pixel(n, x, y);
+        if (b == 32 && (dm1 & DM1_RGBMD)) p = unpack_rgb(dm1, p);
         if (b == 32) w = p;
         else w |= (p & ((1u << b) - 1)) << (32 - b * (k + 1));
         step_block(n, &x, &y, ydir);
@@ -365,9 +441,9 @@ static void go_body(Newport *n, int kind)
     }
     if (n->trace > 0 && op && n->draws > n->trace_after) {  /* --nptrace N [--nptrace-after M] */
         n->trace--;
-        fprintf(stderr, "[go k%d dm0=%08X dm1=%08X (%d,%d)-(%d,%d) host=%08X ci=%X win=%08X clip=%X mv=%X]\n",
+        fprintf(stderr, "[go k%d dm0=%08X dm1=%08X (%d,%d)-(%d,%d) host=%08X ci=%X win=%08X clip=%X mv=%X wm=%X rgb=%X,%X,%X]\n",
                 kind, dm0, n->drawmode1, n->xstart, n->ystart, n->xend, n->yend, n->hostrw0,
-                n->colori, n->xywin, n->clipmode, n->xymove);
+                n->colori, n->xywin, n->clipmode, n->xymove, n->wrmask, n->colorred, n->colorgrn, n->colorblue);
     }
     if (op == DM0_S2S) { screen_to_screen(n); return; }
     if (op != DM0_DRAW) return;
@@ -507,6 +583,7 @@ static uint32_t dcb_read(Newport *n, int nb)
 
 /* coordinate: virgola fissa con 4 bit di frazione nei bit 26:7, intero nei 26:11 */
 #define FX_MASK 0x07FFFF80u
+#define FXF_MASK 0x007FFF80u
 static int32_t fx_to_int(uint32_t v) { return (int32_t)(int16_t)((v >> 11) & 0xFFFF); }
 static uint32_t int_to_fx(int32_t v) { return ((uint32_t)v & 0xFFFF) << 11; }
 
@@ -573,10 +650,16 @@ static void rex_write(Newport *n, uint32_t off, uint32_t v, int is_go)
     case R_ALPHAREF:  n->alpharef = v & 0xFF; break;
     case R_SMASK0X:   n->smask0x = v; break;
     case R_SMASK0Y:   n->smask0y = v; break;
-    case R_XSTART: case R_XSTARTF: n->fxs = v & FX_MASK; n->xstart = n->xsave = fx_to_int(n->fxs); break;
-    case R_YSTART: case R_YSTARTF: n->fys = v & FX_MASK; n->ystart = fx_to_int(n->fys); break;
-    case R_XEND: case R_XENDF: case R_XENDF1: n->fxe = v & FX_MASK; n->xend = fx_to_int(n->fxe); break;
-    case R_YEND: case R_YENDF: n->fye = v & FX_MASK; n->yend = fx_to_int(n->fye); break;
+    case R_XSTART:  n->fxs = v & FX_MASK; n->xstart = n->xsave = fx_to_int(n->fxs); break;
+    case R_YSTART:  n->fys = v & FX_MASK; n->ystart = fx_to_int(n->fys); break;
+    case R_XEND:    n->fxe = v & FX_MASK; n->xend = fx_to_int(n->fxe); break;
+    case R_YEND:    n->fye = v & FX_MASK; n->yend = fx_to_int(n->fye); break;
+    /* registri "F": intero senza segno a 12 bit (22:11). GL ci scrive dei
+       float con un 4096 aggiunto: la mantissa e' gia' la virgola fissa */
+    case R_XSTARTF: n->fxs = v & FXF_MASK; n->xstart = n->xsave = fx_to_int(n->fxs); break;
+    case R_YSTARTF: n->fys = v & FXF_MASK; n->ystart = fx_to_int(n->fys); break;
+    case R_XENDF: case R_XENDF1: n->fxe = v & FXF_MASK; n->xend = fx_to_int(n->fxe); break;
+    case R_YENDF:   n->fye = v & FXF_MASK; n->yend = fx_to_int(n->fye); break;
     case R_XSAVE:     n->xsave = (int16_t)(v & 0xFFFF); break;
     case R_XYMOVE:    n->xymove = v; break;
     case R_XSTARTI:
@@ -606,7 +689,7 @@ static void rex_write(Newport *n, uint32_t off, uint32_t v, int is_go)
             n->colorred = (v & 0xFF) << 11;
             n->colorgrn = ((v >> 8) & 0xFF) << 11;
             n->colorblue = ((v >> 16) & 0xFF) << 11;
-        }
+        } else n->colorred = (v & 0xFFF) << 11;                  /* CI: l'indice va nel rosso */
         break;
     case R_HOSTRW0:      /* in modo doppio (RWDBL) disegna hostrw0 e poi hostrw1, gia' scritto */
         n->hostrw0 = v;
@@ -683,13 +766,44 @@ uint64_t np_read(Newport *n, uint32_t off, int size)
     return size == 4 ? w : (w >> sh) & ((1u << (8 * size)) - 1);
 }
 
+/* Scrittura parziale nella zona go di hostrw0/1 (il VDMA con righe che non
+   cominciano o finiscono sui 64 bit, es. X che ridisegna lo sfondo): si
+   aggiornano solo quei byte e si disegnano solo i pixel che contengono. */
+static void host_partial(Newport *n, int lane, int size, uint64_t val)
+{
+    uint32_t dm1 = n->drawmode1, px[8];
+    int np = 0;
+    for (int i = 0; i < size; i++) {
+        uint32_t b = (uint32_t)(val >> (8 * (size - 1 - i))) & 0xFF;
+        int l = lane + i, sh = 8 * (3 - (l & 3));
+        uint32_t *reg = l < 4 ? &n->hostrw0 : &n->hostrw1;
+        *reg = (*reg & ~(0xFFu << sh)) | b << sh;
+        if (DM1_HD(dm1) == 1) px[np++] = b;                      /* 8 bit: un pixel per byte */
+        else if (DM1_HD(dm1) == 0) { px[np++] = b >> 4; px[np++] = b & 15; }
+    }
+    if (DM1_HD(dm1) == 3 && size == 4) px[np++] = (uint32_t)val;
+    if (!(dm1 & DM1_RWPCKD) || !np) return;                      /* 12 bit o non impacchettati: non visti */
+    n->hpx = px;
+    n->nhpx = np;
+    go(n, GO_HOST);
+    n->hpx = NULL;
+}
+
 void np_write(Newport *n, uint32_t off, int size, uint64_t val)
 {
     off &= 0xFFFF;
     if ((off & 0x7F8) == R_HOSTRW0)                   /* statistiche: come arrivano i dati */
         n->hoststat[(off >> 11) & 1][(off >> 2) & 1][size == 8]++;
-    if (size == 8) {
-        np_write(n, off, 4, val >> 32);
+    if ((off & 0xFF8) == 0x800 + R_HOSTRW0) {        /* dati dall'host con go */
+        if (size == 8 && !(off & 7)) {                /* hostrw0 e hostrw1, un comando */
+            rex_write(n, R_HOSTRW1, (uint32_t)val, 0);
+            rex_write(n, R_HOSTRW0, (uint32_t)(val >> 32), 1);
+            return;
+        }
+        if (size != 4 || (off & 7)) { host_partial(n, (int)(off & 7), size, val); return; }
+    }
+    if (size == 8) {             /* due registri, ma un solo go: dopo il secondo */
+        np_write(n, off & ~0x800u, 4, val >> 32);
         np_write(n, off + 4, 4, (uint32_t)val);
         return;
     }
@@ -722,11 +836,31 @@ void np_vblank(Newport *n)
 
 /* ---- uscita video ---- */
 
+/* Modo XMAP: bit 0 = buffer mostrato nel doppio buffer (0 = nibble o
+   meta' bassa, 1 = alta), 7:3 banco della CMAP, 9:8 CI/RGB, 11:10
+   profondita' (4, 8, 12, 24 bit). */
+static uint32_t buffer_shift(const Newport *n, uint32_t mode)
+{
+    if (!(mode & 1)) return 0;
+    switch ((mode >> 10) & 3) {
+    case 0:  return 4;
+    case 1:  return n->planes24 ? 8 : 0;
+    case 2:  return 12;
+    default: return 0;
+    }
+}
+
 static uint32_t expand(const Newport *n, uint32_t pix, uint32_t mode)
 {
     uint32_t msb = (mode >> 3) & 0x1F;
+    pix >>= buffer_shift(n, mode);
     switch ((mode >> 10) & 3) {                                  /* profondita': bit 11:10 */
-    case 0:  return n->cmap[((msb << 8) | (pix & 0xF)) & 0x1FFF];
+    case 0:
+        if ((mode >> 8) & 3) {                                   /* RGB 1:2:1 */
+            uint32_t r = pix & 1, g = (pix >> 1) & 3, b = (pix >> 3) & 1;
+            return (r * 255) << 16 | (g * 85) << 8 | b * 255;
+        }
+        return n->cmap[((msb << 8) | (pix & 0xF)) & 0x1FFF];
     case 1:
         if ((mode >> 8) & 3) {                                   /* bit 9:8 = modo: RGB 3:3:2 */
             uint32_t r = pix & 7, g = (pix >> 3) & 7, b = (pix >> 6) & 3;
@@ -773,14 +907,14 @@ void np_render(const Newport *n, uint32_t *out)
                 mode = n->xmap_mode[e & 31];
                 e = n->vc2_ram[(list + ++k) & 0x7FFF];
             }
-            if (((mode >> 10) & 3) == 1 && !((mode >> 8) & 3)) {     /* CI a 8 bit: banco diretto */
+            if (((mode >> 10) & 3) == 1 && !((mode >> 8) & 3) && !buffer_shift(n, mode)) {  /* CI a 8 bit: banco diretto */
                 const uint32_t *bank = n->cmap + ((((mode >> 3) & 0x1F) << 8) & 0x1FFF);
                 for (; fx < end; fx++)
-                    dst[fx - NP_X0] = pup[fx] ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF]
+                    dst[fx - NP_X0] = pup[fx] & 0x0C ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | (pup[fx] >> 2 & 3)) & 0x1FFF]
                                               : bank[src[fx] & 0xFF];
             } else {
                 for (; fx < end; fx++) {
-                    uint32_t c = pup[fx] ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | pup[fx]) & 0x1FFF]
+                    uint32_t c = pup[fx] & 0x0C ? n->cmap[((uint32_t)n->xmap_pup_msb << 5 | (pup[fx] >> 2 & 3)) & 0x1FFF]
                                          : expand(n, src[fx], mode);
                     dst[fx - NP_X0] = cmap_rgb(c);
                 }

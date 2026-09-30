@@ -63,6 +63,8 @@ typedef struct Newport {
     int      prof_slot;
     uint64_t trace_after;                   /* traccia solo dopo tanti comandi */
     uint64_t hoststat[2][2][2];             /* scritture di hostrw: [go][rw1][64 bit] */
+    const uint32_t *hpx;                    /* pixel di una scrittura parziale di hostrw */
+    int      nhpx;
 } Newport;
 
 int      np_init(Newport *n, int planes24);

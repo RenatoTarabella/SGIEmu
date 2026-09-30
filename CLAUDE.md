@@ -86,7 +86,29 @@ indy_boot --prom roms\ip24prom.bin --ms 12000 --io 0 --exc 0 --keys "{WAIT}x12 5
 `--io` prints accesses to hardware that doesn't exist yet, `--mc` every MC
 register write, `--exc` exceptions (with the physical address of bus
 errors), `--scsi` every SCSI command and DMA, `--nvlog` NVRAM reads,
-`--dis ADDR` disassembles 48 instructions of the final memory.
+`--dis ADDR[,N]` disassembles N (48) instructions of the final memory
+(kernel modules at `0xC0...` too), `--kbdlog` every 8042 data access.
+
+More `--keys` commands for driving the desktop headless: `{M=dx,dy,b}` moves
+the PS/2 mouse in steps of 4 (no X acceleration; b = buttons, 1 = left),
+`{K=1E}` / `{K=E048}` presses and releases a set-1 scan code (E0 prefix as
+0xE0xx), `{D=..}` / `{U=..}` only press / release (modifiers), `{PNG}` saves
+`<--png>.N.png` and prints the Newport command count (use it with
+`--nptrace-after` / `--nplog`, which then start from that command), `{REG}`
+prints pc/ra/a0-a2/Status (sample a hang). The pointer starts at the screen
+centre (640,512).
+
+Graphical boot to the desktop and a program in the root Console (~2 min real):
+
+```
+indy_boot --prom roms\ip24prom.bin --nvram roms\nvram\indy.nvram --disk disks\irix53.img
+          --ms 230000 --io 0 --exc 0 --kbd --png shot
+          --keys "{T=160}root{CR}{T=205}{M=-400,280,0}{M=0,0,1}{M=0,0,0}{WAIT}
+                  cd /usr/demos{CR}bin/buttonfly &{CR}{T=225}{PNG}"
+```
+(one line; `roms\nvram\indy.nvram` is the window's NVRAM with console=g and
+autoboot, the login panel appears at ~150 s emulated). Never run indy_boot
+on `disks\irix53.img` while `indy.exe` is using it.
 
 Boot IRIX 5.3 from the installed disk to a root shell (about 2 minutes real):
 
@@ -172,8 +194,27 @@ R4400:
   at 128 MB at `0x20000000` and writing at +4/+16/+64 MB: memory beyond the
   SIMMs must wrap. With SBANKS (0x4000) the upper half is the second SIMM
   side: absent here (single-sided), it must *not* wrap.
-- The PROM clears RAM with VDMA fill (mode 0x5A, fill value = GIO_ADR) and
-  wants DMA_RUN bit 0x40 set right after the start, then clear.
+- VDMA (MC virtual DMA), from the IRIX ng1 driver: MODE 0x02 = GIO to
+  memory, 0x08 = fill (value = GIO_ADR), 0x10 = increment, 0x40 long burst;
+  SIZE = lines << 16 | bytes per line, STRIDE low 16 bits signed bytes added
+  after each line (bit 16 = zoom 1). The GIO address is fixed (Newport
+  hostrw0 go, `0x1F0F0A30`, 64-bit words). The PROM clears RAM with mode
+  0x5A and wants DMA_RUN 0x40 right after the start, then clear. DMA_RUN
+  after the end: 0x08 = done; 0 without 0x08 = stopped on an invalid page
+  (MEMADR = that address), and the kernel sets the PTE valid bit and
+  resumes with STDMA (0x2044) = 1; other bits are errors. DMA_CTRL (0x16C)
+  bit 0x10 = MEMADR is virtual: DMA TLB at 0x184 + 16k (HI = 4 MB segment)
+  / 0x18C + 16k (LO = EntryLo of the page-table page, bit 1 valid), PTE
+  4 bytes per page, phys = (pte & 0x03FFFFC0) << 6. The async path waits for
+  the end interrupt on local0 0x10 and clears DMA_INTR_CAUSE (0x164) with 0.
+  Without these, "ng1: pixel dma timeout".
+- VDMA alignment: the memory side is a byte stream (X repaints the desktop
+  background with lines of 126/130 bytes from odd addresses, STRIDE =
+  256 - width); GIO_ADR carries the same misalignment (`hostrw0 + 6`), so
+  each line starts at byte lane GIO_ADR & 7 of a 64-bit word and the
+  first/last words are partial. The Newport draws only the pixels of the
+  enabled bytes (see Newport facts). Word-sized transfers gave the vertical
+  stripes and stale window corners after minimizing a window.
 - DS1386: year register = year - 1940 (IRIX `YRREF`); the PROM clears TE
   before reading the clock, so the registers must be snapshotted then.
   The Indy environment lives in the DS1386 NVRAM, not in the 93CS56 EEPROM.
@@ -184,7 +225,13 @@ R4400:
   8254 counters 0/1 (cleared by writing TCLEAR), IP6 bus error, IP7 Count.
   Mapped sources (serial 0x20, keyboard 0x10...) reach local0 bit 7 /
   local1 bit 3 through cmeimask0/1. The 8254 counter 2 runs at 1 MHz and
-  clocks counters 0 and 1.
+  clocks counters 0 and 1. The Newport vertical retrace is local1 bit 7
+  (IRIX imask1 = 0xA2), not a mapped source: IRIX does GL buffer swaps and
+  cursor work in that interrupt and clears it by reading REX3 status.
+- HAL2 (audio, PBUS channel 0 at `0x1FBD8000`): revision register (+0x20)
+  bit 15 = audio *absent*. Reading 0 there made IRIX use audio; the first
+  desktop sound (an error beep, System Shutdown) then hung the kernel at
+  splhi refilling the ring buffer forever (keyboard and mouse dead).
 - No graphics board: the PROM says "Cannot open video() for output" and uses
   the serial console; GIO reads must give a bus error (the probe expects it).
 - HPC3 SCSI DMA channel 0: NDPTR at HPC3+0x10004, CTRL at +0x11004 (ACTIVE
@@ -224,9 +271,39 @@ R4400:
 - Board id: CMAP revision register (CRS 6): bit 7 = 8 planes, 6:4 board rev.
 - Framebuffer is 1344 wide; the visible area starts at column 8 (the PROM
   uses xywin 0x1008). Rows wrap at 1024 (the PROM draws row 1024 = row 0).
-- XMAP9 mode register: pixel depth in bits 11:10 (1 = 8 bit), mode in 9:8
-  (0 = CI, else RGB), colormap bank (msb) in 7:3. CI uses `cmap[msb<<8 | pix]`;
-  banks 0x1D-0x1F are gamma ramps; cursor colours at `(curs_msb << 5) | v`.
+- XMAP9 mode register: pixel depth in bits 11:10 (0 = 4, 1 = 8, 2 = 12,
+  3 = 24 bit), mode in 9:8 (0 = CI, else RGB), colormap bank (msb) in 7:3,
+  bit 0 = displayed buffer of a double-buffered window (1 = high nibble /
+  half). CI uses `cmap[msb<<8 | pix]`; banks 0x1D-0x1F are gamma ramps;
+  cursor colours at `(curs_msb << 5) | v`.
+- GL (buttonfly) on the XL8: 4-bit CI double buffered. Drawing with depth 4
+  replicates the value in both nibbles and wrmask (0xF0 / 0x0F) picks the
+  buffer (same for 8/12 bit on 24 planes); drawmode1 bit 5 (DBLSRC) reads
+  the high one. The swap is the kernel flipping XMAP mode bit 0 at retrace.
+- GL writes IEEE floats plus 4096 into coordinates and colours: the REX3
+  keeps the mantissa. The "F" registers (xstartf 0x138 ... yendf 0x144,
+  xendf1 0x14C) have a 12-bit unsigned integer in bits 22:11 (mask
+  0x007FFF80), unlike xstart 0x100 (26:11 signed). In CI mode the colour
+  index is the integer part of colorred (colori writes it there).
+- A 64-bit write to the go area is two registers and one command, started
+  after the second (GL writes xstarti+xendf1 at 0x948).
+- Host data writes: 64-bit at hostrw0 go = hostrw0 + hostrw1, one command;
+  32-bit at hostrw0 go = hostrw0 (+ hostrw1 with RWDBL, X's trick); any
+  other size or offset in 0xA30-0xA37 is a partial word from the VDMA and
+  draws only the pixels in those bytes (`host_partial`). The MC therefore
+  never sends 32 bits at lane 0 for a partial word (two 16-bit writes).
+- The "demos" account background is a 256x256 tile dithered between two
+  colormap cells (0x31/0x32 of bank 0x12, 1F0051 and 135E5E as written by
+  X): the grain is genuine, not an emulation bug (still to compare with
+  MAME).
+- Popup (planes 5) and CID (6): the 2-bit value is replicated over the byte,
+  X draws menus with wrmask 0xCC; the popup shown is bits 3:2 (colour
+  `(pup_msb << 5) | v`). Without the replication Toolchest menus and
+  dialogs never appeared.
+- RGB mode with 32-bit host pixels (HD 3, ABGR, red in the low byte) into
+  a smaller depth: the REX3 packs to 3:3:2 (4:4:4, 1:2:1) with a 4x4
+  ordered dither when drawmode1 bit 16 is set (ipaste, desktop
+  backgrounds); 32-bit reads unpack. Writing the low byte gave noise.
 - DID tables: VC2 register 5 points to one pointer per display line; each
   line is a list of `(x << 5) | DID` ending with 0xFFFF, x in framebuffer
   columns. X uses different XMAP modes per window (root CI bank 0x12, the
@@ -267,20 +344,15 @@ R4400:
    shell (hinv, df, ps work). About 200 MIPS, i.e. 2x a 100 MHz Indy.
 4. Newport and window — done: graphical PROM, X login, Indigo Magic desktop;
    `indy.exe` window with PS/2 keyboard and mouse, real time (100 MIPS
-   capped; ~200 MIPS available). Open: overlay/popup planes and the pup
-   colormap are guesses, XL24, lines/stipples barely tested, IRIX keyboard
-   layout.
-   **Open bugs seen by the user in `indy.exe`** (screenshot 2026-09-29):
-   - Console floods "ng1: pixel dma timeout" / "ng1 pixel dma write timeout":
-     GL (buttonfly, desktop background) moves pixels with the MC VDMA
-     between memory and GIO/Newport; `vdma_start` in `mc.c` only does fill
-     mode. Next thing to implement (MC regs at 0x1FA02000, see the DMA
-     enum; GIO side = Newport hostrw via the DMA GIO address).
-   - buttonfly drawn wrong (solid red/green areas), desktop background with
-     bands of dithered noise: probably VDMA + unhandled REX3 modes.
-   - A key produced `^[[088q` in the Console: some key (Ctrl/Alt/F-key?)
-     translated wrong by `kbc8042.c` / `indy_win32.c`.
-   - Window drops to ~49 MIPS during the timeouts (target 100).
+   capped; ~200 MIPS available). VDMA, GL double buffering, retrace,
+   popup menus and dithered RGB images work (buttonfly, ipaste, System
+   Shutdown with power off). Open: overlay planes, XL24, Gouraud shading
+   (colour slopes are ignored), lines/stipples barely tested, VDMA zoom.
+   **Keyboard layout**: IRIX uses the US layout. On the user's Italian
+   keyboard AltGr (Windows sends LCtrl + RAlt) reaches IRIX as Ctrl+Alt+key
+   and xwsh prints `^[[NNNq` (Alt+a = 087; `^[[088q` came from this). Fix:
+   PROM `keybd` variable set to the Italian layout plus dropping the fake
+   LCtrl that Windows sends before RAlt in `indy_win32.c` — not done yet.
 5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.

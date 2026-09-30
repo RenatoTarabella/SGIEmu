@@ -37,7 +37,7 @@ enum {
     L0_FIFO = 0x01, L0_SCSI0 = 0x02, L0_SCSI1 = 0x04, L0_ENET = 0x08,
     L0_MCDMA = 0x10, L0_PPORT = 0x20, L0_GIO1 = 0x40, L0_MAP0 = 0x80,
     L1_GPL0 = 0x01, L1_PANEL = 0x02, L1_GPL2 = 0x04, L1_MAP1 = 0x08,
-    L1_HPCDMA = 0x10, L1_ACFAIL = 0x20, L1_VINO = 0x40, L1_GIO2 = 0x80,
+    L1_HPCDMA = 0x10, L1_ACFAIL = 0x20, L1_VINO = 0x40, L1_RETRACE = 0x80,        /* GIO2: retrace verticale della grafica */
     MAP_VRETRACE = 0x01, MAP_EISA = 0x08, MAP_KBD = 0x10, MAP_SERIAL = 0x20,
     MAP_GIOEXP0 = 0x40, MAP_GIOEXP1 = 0x80
 };
@@ -47,6 +47,12 @@ typedef struct IndyMC {
     uint32_t rcntpre, giopar, cputp, lbursttp, mconfig0, mconfig1;
     uint32_t cmacc, gmacc, cerr, cstat, gerr, gstat, semaphore;
     uint64_t dma_busy_until;           /* ns: fine del VDMA in corso */
+    uint32_t dma_status;               /* DMA_RUN dopo la fine */
+    uint32_t dma_lines, dma_left;      /* righe e byte della riga che restano */
+    int      dma_paused;               /* fermo su una pagina non valida */
+    int      dma_irq_pending;          /* fine DMA da segnalare (local0 GFXDMA) */
+    int      dma_line_ready;           /* la riga in dma_line e' gia' pronta (ripresa) */
+    uint8_t  dma_line[0x10008];        /* una riga del VDMA, piu' la parola di coda */
     uint32_t usem[16];                 /* semafori utente a 0x1FA10000 */
     uint32_t regs[0x2100 / 4];         /* tutto il resto: si ricorda e basta */
 } IndyMC;
@@ -96,6 +102,7 @@ typedef struct Indy {
     int      mc_log;                   /* stampa le scritture dell'MC */
     int      scsi_log;                 /* stampa comandi SCSI e DMA */
     int      rtc_log;                  /* stampa le letture della NVRAM */
+    int      kbd_log;                  /* stampa gli accessi ai dati dell' 8042 */
     long     gfx_log;                  /* accessi alla Newport da stampare */
     uint64_t np_calls, np_ticks;       /* profilo: accessi alla Newport e tempo (rdtsc) */
     void   (*io_log)(struct Indy *m, int write, uint32_t pa, int size, uint64_t val);

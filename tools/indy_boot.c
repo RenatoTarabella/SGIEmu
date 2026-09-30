@@ -25,11 +25,12 @@ static Indy M;
 static long exc_print_left = 20;
 static int last_tx_ch = 1;
 static int col0 = 1;
-static int mc_log, scsi_log, nv_log, ndisk;
+static int mc_log, scsi_log, nv_log, kbd_log, ndisk;
 static long np_log, np_trace;
 static uint64_t np_trace_after;
 static const char *disk_path[8], *cdrom_path;
 static uint64_t dis_addr;
+static int dis_count = 48;
 static const char *png_path, *save_nvram;
 static uint64_t bp_addr;
 static long bp_left = 200;
@@ -184,10 +185,16 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--scsi")) scsi_log = 1;
         else if (!strcmp(a, "--kbd")) kbd_mode = 1;
         else if (!strcmp(a, "--nvlog")) nv_log = 1;
+        else if (!strcmp(a, "--kbdlog")) kbd_log = 1;
         else if (!strcmp(a, "--nplog") && v) { np_log = atol(v); k++; }
         else if (!strcmp(a, "--nptrace") && v) { np_trace = atol(v); k++; }
         else if (!strcmp(a, "--nptrace-after") && v) { np_trace_after = strtoull(v, NULL, 0); k++; }
-        else if (!strcmp(a, "--dis") && v) { dis_addr = strtoull(v, NULL, 16); k++; }
+        else if (!strcmp(a, "--dis") && v) {           /* --dis ADDR[,N] */
+            char *e;
+            dis_addr = strtoull(v, &e, 16);
+            if (*e == ',') dis_count = atoi(e + 1);
+            k++;
+        }
         else if (!strcmp(a, "--png") && v) { png_path = v; k++; }
         else if (!strcmp(a, "--bp") && v) { bp_addr = strtoull(v, NULL, 16); k++; }
         else if (!strcmp(a, "--save-nvram") && v) { save_nvram = v; k++; }
@@ -217,6 +224,7 @@ int main(int argc, char **argv)
     M.mc_log = mc_log;
     M.scsi_log = scsi_log;
     M.rtc_log = nv_log;
+    M.kbd_log = kbd_log;
     M.gfx_log = np_log;
     M.gfx.trace = np_trace;
     M.gfx.trace_after = np_trace_after;
@@ -268,6 +276,50 @@ int main(int argc, char **argv)
                 next_key = strtoull(kp + 3, NULL, 10) * 1000 * per_ms;
                 kp = strchr(kp, '}') ? strchr(kp, '}') + 1 : kp + 3;
             }
+            else if (!strncmp(kp, "{M=", 3)) {                  /* {M=dx,dy,tasti}: mouse a passi di 4 */
+                int dx = 0, dy = 0, b = 0;
+                sscanf(kp + 3, "%d,%d,%d", &dx, &dy, &b);
+                do {
+                    int sx = dx > 4 ? 4 : dx < -4 ? -4 : dx, sy = dy > 4 ? 4 : dy < -4 ? -4 : dy;
+                    while (kbc_room(&M.kbc) < 16) done += indy_run(&M, per_ms);
+                    kbc_mouse(&M.kbc, sx, -sy, b);
+                    indy_update_irq(&M);
+                    done += indy_run(&M, per_ms / 4);
+                    dx -= sx; dy -= sy;
+                } while (dx || dy);
+                kp = strchr(kp, '}') + 1;
+                next_key = M.cpu.icount + 30 * per_ms;
+            }
+            else if (!strncmp(kp, "{K=", 3) || !strncmp(kp, "{D=", 3) || !strncmp(kp, "{U=", 3)) {
+                /* {K=1D} o {K=E038}: scan code del set 1 premuto e rilasciato;
+                   {D=..} solo premuto, {U=..} solo rilasciato (modificatori) */
+                unsigned v = (unsigned)strtoul(kp + 3, NULL, 16);
+                int ext = v >= 0x100;
+                if (kp[1] != 'U') kbc_key(&M.kbc, (int)(v & 0xFF), ext, 1);
+                if (kp[1] != 'D') kbc_key(&M.kbc, (int)(v & 0xFF), ext, 0);
+                indy_update_irq(&M);
+                kp = strchr(kp, '}') + 1;
+                next_key += 30 * per_ms;
+            }
+            else if (!strncmp(kp, "{REG}", 5)) {                /* dove e' la CPU adesso */
+                fprintf(stderr, "[t=%.3f pc=%llX ra=%llX a0=%llX a1=%llX a2=%llX sp=%llX Status=%llX]\n",
+                        M.cpu.icount / (double)per_ms / 1000, (unsigned long long)M.cpu.pc,
+                        (unsigned long long)M.cpu.r[31], (unsigned long long)M.cpu.r[4],
+                        (unsigned long long)M.cpu.r[5], (unsigned long long)M.cpu.r[6],
+                        (unsigned long long)M.cpu.r[29], (unsigned long long)M.cpu.cp0[CP0_STATUS]);
+                kp += 5;
+                next_key += 200 * per_ms;
+            }
+            else if (!strncmp(kp, "{PNG}", 5) && png_path && M.has_gfx) {   /* schermata intermedia */
+                static uint32_t shot[NP_W * NP_H];
+                static int nshot;
+                char name[512];
+                snprintf(name, sizeof name, "%s.%d.png", png_path, nshot++);
+                np_render(&M.gfx, shot);
+                if (png_write(name, shot, NP_W, NP_H, 1) ) fprintf(stderr, "schermo in %s (comandi Newport %llu)\n", name,
+                                                                            (unsigned long long)M.gfx.draws);
+                kp += 5;
+            }
             else { send_char((uint8_t)*kp++); next_key += 30 * per_ms; }
         }
         uint64_t chunk = trace > 0 ? 1 : per_ms;
@@ -286,9 +338,9 @@ int main(int argc, char **argv)
         printf("  %-4s %016llX  %-4s %016llX  %-4s %016llX  %-4s %016llX\n",
                r4k_reg_names[i], (unsigned long long)c->r[i], r4k_reg_names[i + 1], (unsigned long long)c->r[i + 1],
                r4k_reg_names[i + 2], (unsigned long long)c->r[i + 2], r4k_reg_names[i + 3], (unsigned long long)c->r[i + 3]);
-    if (dis_addr) {                                /* --dis: 48 istruzioni da li' */
+    if (dis_addr) {                                /* --dis: dis_count istruzioni da li' */
         uint64_t a = (uint64_t)(int64_t)(int32_t)dis_addr;
-        for (int j = 0; j < 48; j++, a += 4) {
+        for (int j = 0; j < dis_count; j++, a += 4) {
             uint64_t w; char b[96];
             if (!r4k_peek(&M.cpu, a, 4, &w)) break;
             r4k_disasm(a, (uint32_t)w, b, sizeof b);
@@ -321,6 +373,11 @@ int main(int argc, char **argv)
         for (int k = 0; k < 6; k++) printf(" %04X", g->vc2_ram[(de + k) & 0x7FFF]);
         printf(" ... riga 300 -> %04X:", g->vc2_ram[(de + 300) & 0x7FFF]);
         for (int k = 0; k < 10; k++) printf(" %04X", g->vc2_ram[(g->vc2_ram[(de + 300) & 0x7FFF] + k) & 0x7FFF]);
+        for (int rr = 10; rr < 160; rr += 30) {
+            uint16_t l = g->vc2_ram[(de + rr) & 0x7FFF];
+            printf("\n  riga %d -> %04X:", rr, l);
+            for (int k = 0; k < 10; k++) printf(" %04X", g->vc2_ram[(l + k) & 0x7FFF]);
+        }
         printf("\n  hostrw (32/64 bit): set0 %llu/%llu set1 %llu/%llu go0 %llu/%llu go1 %llu/%llu",
                (unsigned long long)g->hoststat[0][0][0], (unsigned long long)g->hoststat[0][0][1],
                (unsigned long long)g->hoststat[0][1][0], (unsigned long long)g->hoststat[0][1][1],
@@ -333,6 +390,25 @@ int main(int argc, char **argv)
         printf("\n  vc2 regs:");
         for (int k = 0; k < 0x11; k++) printf(" %X", g->vc2_reg[k]);
         printf("\n");
+        if (getenv("FB_HIST")) {                        /* valori grezzi in un rettangolo x,y,w,h */
+            int hx = 300, hy = 10, hw = 256, hh = 60;
+            sscanf(getenv("FB_HIST"), "%d,%d,%d,%d", &hx, &hy, &hw, &hh);
+            static uint32_t val[64], cnt[64];
+            int nval = 0;
+            for (int y = hy; y < hy + hh; y++)
+                for (int x = hx; x < hx + hw; x++) {
+                    uint32_t v = g->rgb[y * NP_FBW + x + NP_X0];
+                    int k = 0;
+                    while (k < nval && val[k] != v) k++;
+                    if (k == nval && nval < 64) { val[nval] = v; cnt[nval++] = 0; }
+                    if (k < 64) cnt[k]++;
+                }
+            printf("  valori del framebuffer in %d,%d %dx%d:", hx, hy, hw, hh);
+            for (int k = 0; k < nval; k++) printf(" %X:%u", val[k], cnt[k]);
+            printf("\n  prima riga:");
+            for (int x = hx; x < hx + 32; x++) printf(" %X", g->rgb[hy * NP_FBW + x + NP_X0]);
+            printf("\n");
+        }
         printf("  pixel a (640,300): rgb=%X  cmap[0..7]:", g->rgb[300 * NP_FBW + 648]);
         for (int k = 0; k < 8; k++) printf(" %06X", g->cmap[k]);
         printf("\n");
@@ -355,13 +431,18 @@ int main(int argc, char **argv)
     if (png_path && M.has_gfx) {
         static uint32_t screen[NP_W * NP_H];
         np_render(&M.gfx, screen);
-        if (png_write(png_path, screen, NP_W, NP_H, 1) == 0) printf("schermo in %s\n", png_path);
+        if (png_write(png_path, screen, NP_W, NP_H, 1)) printf("schermo in %s\n", png_path);
     }
     printf("eccezioni:");
     for (int k = 0; k < 32; k++)
         if (c->exc_count[k]) printf(" %s=%llu", r4k_exc_names[k], (unsigned long long)c->exc_count[k]);
     printf("\nMC: mconfig0=%08X mconfig1=%08X cpuctrl0=%08X gstat=%08X\n",
            M.mc.mconfig0, M.mc.mconfig1, M.mc.cpuctrl0, M.mc.gstat);
+    printf("INT3: imask0=%02X imask1=%02X cmeimask0=%02X cmeimask1=%02X\n",
+           M.ioc.imask0, M.ioc.imask1, M.ioc.cmeimask0, M.ioc.cmeimask1);
+    printf("  raw lio0=%02X lio1=%02X map=%02X  8042: %d byte in coda, cmd=%02X aux=%d\n",
+           M.ioc.lio0_raw, M.ioc.lio1_raw, M.ioc.map_raw, KBC_Q - 1 - kbc_room(&M.kbc),
+           M.kbc.cmdbyte, M.kbc.aux_enabled);
     printf("accessi senza dispositivo (%d blocchi da 256 byte):\n", n_io_pages);
     qsort(io_pages, (size_t)n_io_pages, sizeof io_pages[0], cmp_pages);
     for (int k = 0; k < n_io_pages && k < 20; k++)
