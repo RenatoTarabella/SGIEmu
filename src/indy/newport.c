@@ -92,7 +92,9 @@ void np_reset(Newport *n)
     n->irq = 0;
     memset(n->vc2_reg, 0, sizeof n->vc2_reg);
     /* revisione della scheda: bit 7 = 8 piani, 6:4 scheda, 2:0 CMAP */
-    n->cmap_rev = (uint8_t)((n->planes24 ? 0 : 0x80) | (3 << 4) | 3);
+    /* XL24 con scheda rev. 2: dalla 3 in su la PROM legge il monitor altrove e
+       sceglie 1024x768 */
+    n->cmap_rev = (uint8_t)(n->planes24 ? (2 << 4) | 3 : 0x80 | (3 << 4) | 3);
 }
 
 /* ---- pixel ---- */
