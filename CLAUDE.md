@@ -369,10 +369,11 @@ R4400:
    `indy.exe` window with PS/2 keyboard and mouse, real time (100 MIPS
    capped; ~200 MIPS available). VDMA, GL double buffering, retrace,
    popup menus and dithered RGB images work (buttonfly, ipaste, System
-   Shutdown with power off). Open: overlay planes, XL24, Gouraud shading
-   (colour slopes are ignored), lines/stipples barely tested, VDMA zoom.
-   **Keyboard layout**: IRIX uses the US layout. On the user's Italian
-   keyboard AltGr (Windows sends LCtrl + RAlt) reaches IRIX as Ctrl+Alt+key
+   Shutdown with power off), GL demos (flight, atlantis, ideas_ogl with
+   Gouraud, blast). Open: overlay planes, XL24, stipples/blending barely
+   tested, VDMA zoom, the exact REX3 dither matrix.
+   **Keyboard layout**: IRIX uses the US layout. On non-US keyboards (the user's is
+   Spanish) AltGr (Windows sends LCtrl + RAlt) reaches IRIX as Ctrl+Alt+key
    and xwsh prints `^[[NNNq` (Alt+a = 087; `^[[088q` came from this). Fix:
    PROM `keybd` variable set to the Italian layout plus dropping the fake
    LCtrl that Windows sends before RAlt in `indy_win32.c` — not done yet.
