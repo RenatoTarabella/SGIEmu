@@ -328,7 +328,9 @@ static void draw_block(Newport *n, int kind)
     }
     if ((dm0 & DM0_LRONLY) && n->xend < n->xsave) return;
 
-    long limit = kind == GO_HOST ? nhost : kind == GO_PATTERN ? ((dm0 & DM0_L32) ? 32 : 1) : -1;
+    /* pattern: L32 = al piu' 32 pixel; senza, con STOPX fino a xend (i caratteri di GL) */
+    long limit = kind == GO_HOST ? nhost
+               : kind == GO_PATTERN ? ((dm0 & DM0_L32) ? 32 : (dm0 & DM0_STOPX) ? -1 : 1) : -1;
     long count = 0;
     int ydir = n->yend >= y ? 1 : -1;
     for (;;) {

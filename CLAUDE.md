@@ -292,6 +292,10 @@ R4400:
   xendf1 0x14C) have a 12-bit unsigned integer in bits 22:11 (mask
   0x007FFF80), unlike xstart 0x100 (26:11 signed). In CI mode the colour
   index is the integer part of colorred (colori writes it there).
+- Pattern commands (go on zpattern): with drawmode0 L32 (0x8000) at most 32
+  pixels (X text, `0x9106`); without L32 but with STOPX they run to xend
+  (GL `charstr` text, `0x1106`, one glyph row per command). Drawing one
+  pixel there made flight's text come out as dashes.
 - A 64-bit write to the go area is two registers and one command, started
   after the second (GL writes xstarti+xendf1 at 0x948).
 - Host data writes: 64-bit at hostrw0 go = hostrw0 + hostrw1, one command;
