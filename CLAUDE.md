@@ -49,8 +49,9 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   documentation; read them, never copy code.
 - `roms/` (PROM) and `cdrom/` (IRIX images) exist only locally and are
   **git-ignored: never commit or redistribute them**.
-- Local material (from the user's MAME setups in `D:\SGI_MAME` and
-  `D:\SGI_mame0256s`, MAME 0.287 and 0.256):
+- Local material (copied from the user's old MAME setups, which the user
+  deleted on 2026-09-30: MAME was slow and buggy for them; `D:\Mame\SGI`
+  with `irix65.chd` and the ULTRA64 disk is still there):
   - `roms/ip24prom.bin` = `ip24prom.070-9101-011.bin` from MAME's
     `indy_4610.zip` (512 KB); `roms/indy_4610/` also has the keyboard
     `natural.bin` and a PAL dump;
@@ -60,9 +61,10 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
     EFS root) with IRIX 5.3 installed, from `irix53.chd`;
   - `cdrom/irix53.iso`: IRIX 5.3 install CD, converted from the MODE1_RAW
     `sgi_irix_5.3.bin`.
-  Not copied: the freeware CD collection (100 GB CHD). MAME itself
-  (`mame.exe indy_4610 -gio64_gfx xl24 ...`, `-debug`) can be used as a
-  reference to watch the real PROM/IRIX behaviour; `chdman` extracts CHDs.
+  Not copied (gone with the old setups): the freeware CD collection CHD
+  and MAME itself. To compare with MAME again (`mame.exe indy_4610
+  -gio64_gfx xl24 ...`, `-debug`), install a fresh MAME; `chdman` extracts
+  CHDs.
 - Source comments and commit messages are in Italian (ASCII: `e'`, `perche'`);
   README and this file are in English.
 
@@ -158,7 +160,9 @@ indy_boot --prom roms\ip24prom.bin --disk disks\irix53.img --ms 235000 --io 0 --
 ```
 
 `disks\irix53.img` is modified by IRIX (logs, autoconfig rebuilt `/unix`);
-the pristine copy is `D:\SGI_mame0256s\irix53.chd` (`chdman extracthd`).
+no pristine copy is left (the source CHD was deleted with the old MAME
+setup): the only fallback is `disks\irix53-backup.img` (taken just before
+the demos install). Back it up before risky experiments.
 The MAME install had only the buttonfly menus (`demos.sw.demos`); on
 2026-09-30 the full demos (games, tools, visualization: flight, atlantis,
 ideas, bz, ...) were installed from `cdrom\irix53.iso` with
