@@ -65,6 +65,7 @@ typedef struct Newport {
     uint64_t hoststat[2][2][2];             /* scritture di hostrw: [go][rw1][64 bit] */
     const uint32_t *hpx;                    /* pixel di una scrittura parziale di hostrw */
     int      nhpx;
+    int32_t  slope[4];                      /* pendenze di Gouraud: rosso, alfa, verde, blu */
 } Newport;
 
 int      np_init(Newport *n, int planes24);

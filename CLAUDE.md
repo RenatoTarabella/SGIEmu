@@ -292,6 +292,14 @@ R4400:
   xendf1 0x14C) have a 12-bit unsigned integer in bits 22:11 (mask
   0x007FFF80), unlike xstart 0x100 (26:11 signed). In CI mode the colour
   index is the integer part of colorred (colori writes it there).
+- Gouraud: drawmode0 SHADE (0x40000) makes spans/lines add the slopes
+  (0x210 red, 0x218 green, 0x21C blue) to the colour registers at every
+  pixel. GL writes the slopes as biased floats, so they are *sign-magnitude
+  as written* (bit 31 sign, low bits magnitude; -4096.0 = slope 0), while
+  the read-back must follow the two's-complement rule the PROM register
+  test checks (both are kept: `slope[]` and `misc[]`). A colour channel is
+  bits 19:11 of its register (above are float exponent/bias, not a sign):
+  0-255 as is, 256-383 overshoot (255), 384-511 undershoot (0).
 - Pattern commands (go on zpattern): with drawmode0 L32 (0x8000) at most 32
   pixels (X text, `0x9106`); without L32 but with STOPX they run to xend
   (GL `charstr` text, `0x1106`, one glyph row per command). Drawing one

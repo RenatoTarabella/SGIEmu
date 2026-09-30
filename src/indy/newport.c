@@ -41,6 +41,7 @@ enum {
 #define DM0_ZPENAB   0x00001000
 #define DM0_L32      0x00008000
 #define DM0_ZOPQ     0x00010000
+#define DM0_SHADE    0x00040000
 #define DM0_LRONLY   0x00080000
 /* drawmode1 */
 #define DM1_PLANES(x) ((x) & 7)
@@ -181,6 +182,32 @@ static uint32_t color_at(const Newport *n, int x, int y)
                     (n->colorblue >> 11) & 0xFF, x, y);
 }
 
+/* Gouraud (drawmode0 SHADE): i registri di colore avanzano della pendenza
+   (0x210 rosso, 0x218 verde, 0x21C blu) a ogni pixel. GL le scrive come
+   float con bias: bit 31 segno, bit bassi modulo (-4096.0 = pendenza 0);
+   la rilettura invece e' quella che controlla il test della PROM. Il canale e' nei bit 19:11; sopra ci sono esponente e bias
+   dei float che GL ci scrive, non un segno. Si limita cosi': 0-255 il
+   valore, 256-383 sforato in alto (255), 384-511 piccolo negativo (0). */
+static uint32_t chan_clamp(uint32_t reg)
+{
+    uint32_t f = (reg >> 11) & 0x1FF;
+    return f < 256 ? f : f < 384 ? 255 : 0;
+}
+
+static uint32_t shade_color(const Newport *n, int x, int y)
+{
+    uint32_t dm1 = n->drawmode1;
+    if (!(dm1 & DM1_RGBMD)) return (n->colorred >> 11) & 0xFFF & depth_mask(dm1);
+    return pack_rgb(dm1, chan_clamp(n->colorred), chan_clamp(n->colorgrn), chan_clamp(n->colorblue), x, y);
+}
+
+static void shade_step(Newport *n)
+{
+    n->colorred = (n->colorred + (uint32_t)n->slope[0]) & 0xFFFFFF;
+    n->colorgrn = (n->colorgrn + (uint32_t)n->slope[2]) & 0xFFFFF;
+    n->colorblue = (n->colorblue + (uint32_t)n->slope[3]) & 0xFFFFF;
+}
+
 static int inside(uint32_t mx, uint32_t my, int x, int y)
 {
     int x0 = (int)(mx >> 16), x1 = (int)(mx & 0xFFFF), y0 = (int)(my >> 16), y1 = (int)(my & 0xFFFF);
@@ -315,6 +342,7 @@ static void draw_block(Newport *n, int kind)
     uint32_t fg = draw_color(n), bg = n->colorback & depth_mask(n->drawmode1);
     uint32_t pat = n->zpattern, dm1 = n->drawmode1;
     int dith = color_dithered(n);
+    int shade = (dm0 & DM0_SHADE) && !(dm1 & DM1_FCLR) && kind != GO_HOST;
     /* dall'host in RGB a 32 bit (ABGR) verso una profondita' minore: si converte */
     int hconv = kind == GO_HOST && (dm1 & DM1_RGBMD) && DM1_HD(dm1) == 3 && DM1_DD(dm1) < 3;
     uint32_t host[16];
@@ -334,7 +362,8 @@ static void draw_block(Newport *n, int kind)
     long count = 0;
     int ydir = n->yend >= y ? 1 : -1;
     for (;;) {
-        uint32_t col = kind == GO_HOST ? host[count] : dith ? color_at(n, x, y) : fg;
+        uint32_t col = kind == GO_HOST ? host[count] : shade ? shade_color(n, x, y)
+                     : dith ? color_at(n, x, y) : fg;
         if (hconv) col = pack_rgb(dm1, col & 0xFF, (col >> 8) & 0xFF, (col >> 16) & 0xFF, x, y);
         int draw = 1;
         if (dm0 & DM0_ZPENAB) {
@@ -343,6 +372,7 @@ static void draw_block(Newport *n, int kind)
             if (!((pat >> (31 - bit)) & 1)) { if (dm0 & DM0_ZOPQ) col = bg; else draw = 0; }
         }
         if (draw) put_pixel(n, x, y, col);
+        if (shade) shade_step(n);
         count++;
         int row_end = step_block(n, &x, &y, ydir);
         if (limit >= 0 && count >= limit) break;
@@ -367,17 +397,19 @@ static void draw_line(Newport *n)
     int err = dx + dy, first = 1, k = 0;
     uint32_t fg = draw_color(n), bg = n->colorback & depth_mask(n->drawmode1);
     int dith = color_dithered(n);
+    int shade = (dm0 & DM0_SHADE) && !(n->drawmode1 & DM1_FCLR);
     for (;;) {
         int last = x0 == x1 && y0 == y1;
         int skip = (first && (dm0 & DM0_SK1ST)) || (last && (dm0 & DM0_SKLST));
         if (!skip) {
-            uint32_t col = dith ? color_at(n, x0, y0) : fg;
+            uint32_t col = shade ? shade_color(n, x0, y0) : dith ? color_at(n, x0, y0) : fg;
             int draw = 1;
             if (dm0 & DM0_ZPENAB) {
                 if (!((n->zpattern >> (31 - (k & 31))) & 1)) { if (dm0 & DM0_ZOPQ) col = bg; else draw = 0; }
             }
             if (draw) put_pixel(n, x0, y0, col);
         }
+        if (shade && !skip) shade_step(n);
         k++;
         first = 0;
         if (last) break;
@@ -705,7 +737,8 @@ static void rex_write(Newport *n, uint32_t off, uint32_t v, int is_go)
     default:
         if (off >= 0x210 && off <= 0x21C) {                      /* pendenze: segno e modulo */
             uint32_t bits = off == 0x210 ? 23 : 19, mag = (1u << bits) - 1;
-            v = (v & 0x80000000u) ? (1u << bits) | ((0u - v) & mag) : v & mag;
+            n->slope[(off - 0x210) >> 2] = (int32_t)(v & mag) * ((v & 0x80000000u) ? -1 : 1);   /* GL: segno e modulo */
+            v = (v & 0x80000000u) ? (1u << bits) | ((0u - v) & mag) : v & mag;          /* rilettura (test PROM) */
         }
         if (off >= R_BRESD && off < R_BRESD + 24) {             /* Bresenham: larghezze del chip */
             static const uint32_t bm[6] = { 0x07FFFFFF, 0x0001FFFF, 0x070FFFFF, 0xFF1FFFFF, 0x0000FFFF, 0x03FFFFFF };
