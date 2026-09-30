@@ -541,3 +541,16 @@ R4400:
    xkphys: extend the JIT's unmapped-region chaining (today kseg0/kseg1).
    IRIX's idle loop special-cases the R4600 (PRId 0x20), probably for
    `wait`: check whether R5000 uses it (would allow idle skipping).
+8. **Public GitHub release (later, with calm; agreed 2026-09-30).** The
+   history is clean (no ROM/disk/NVRAM ever committed). To do: a public
+   README with "getting started" (where the PROM goes, how to get IRIX,
+   what works: 5.3/6.5, GL demos, CD-ROM; not yet: network, audio, known
+   glitches); a GitHub Action building the Windows binaries for Releases;
+   a tool to create an empty disk image plus a guide to install IRIX from
+   one's own CD (fx to partition); create the NVRAM on first start (MAC +
+   checksum, as indy_boot does) instead of needing MAME's; recompress the
+   3.9 MB screenshots in docs/; generalize the local `D:\` paths in
+   CLAUDE.md. The icon is the user's 3D render of the SGI cube, a
+   trademark (now HPE): add a "not affiliated, trademarks of their owners"
+   note or use a different icon. PROM, IRIX, demos, nekoware and MAME's
+   NVRAM must never be distributed.
