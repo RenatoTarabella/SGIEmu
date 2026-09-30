@@ -1,6 +1,7 @@
 /*
  * scsi_dev.c - Disco e CD-ROM SCSI su file immagine (blocchi da 512 byte)
  */
+#include <stdlib.h>
 #include <string.h>
 #include "indy/scsi_dev.h"
 
@@ -33,8 +34,9 @@ int scsi_dev_open(ScsiDev *d, int type, const char *path, int readonly)
 {
     memset(d, 0, sizeof *d);
     d->type = type;
-    d->readonly = readonly || type == SCSI_CDROM;
-    d->f = fopen(path, d->readonly ? "rb" : "r+b");
+    d->snapshot = readonly == SCSI_SNAPSHOT && type != SCSI_CDROM;
+    d->readonly = !d->snapshot && (readonly || type == SCSI_CDROM);
+    d->f = fopen(path, d->readonly || d->snapshot ? "rb" : "r+b");
     if (!d->f) return -1;
     fseek64(d->f, 0, SEEK_END);
     d->blocks = (uint64_t)ftell64(d->f) / BLK;
@@ -50,6 +52,51 @@ void scsi_dev_close(ScsiDev *d)
 {
     if (d->f) fclose(d->f);
     d->f = NULL;
+    free(d->cow_key); d->cow_key = NULL;
+    free(d->cow_data); d->cow_data = NULL;
+    d->cow_n = d->cow_cap = 0;
+}
+
+/* ---- blocchi scritti in modo snapshot ---- */
+
+static uint32_t cow_slot(const ScsiDev *d, uint64_t lba)
+{
+    uint32_t i = (uint32_t)(lba * 0x9E3779B97F4A7C15ull >> 40) & (d->cow_cap - 1);
+    while (d->cow_key[i] && d->cow_key[i] != lba + 1) i = (i + 1) & (d->cow_cap - 1);
+    return i;
+}
+
+static uint8_t *cow_find(const ScsiDev *d, uint64_t lba)
+{
+    if (!d->cow_cap) return NULL;
+    uint32_t i = cow_slot(d, lba);
+    return d->cow_key[i] ? d->cow_data + (size_t)i * BLK : NULL;
+}
+
+static uint8_t *cow_add(ScsiDev *d, uint64_t lba)
+{
+    uint8_t *p = cow_find(d, lba);
+    if (p) return p;
+    if ((d->cow_n + 1) * 2 > d->cow_cap) {                  /* raddoppia */
+        uint32_t old = d->cow_cap;
+        uint64_t *ok = d->cow_key;
+        uint8_t *od = d->cow_data;
+        d->cow_cap = old ? old * 2 : 1024;
+        d->cow_key = calloc(d->cow_cap, sizeof *d->cow_key);
+        d->cow_data = malloc((size_t)d->cow_cap * BLK);
+        if (!d->cow_key || !d->cow_data) { fprintf(stderr, "snapshot: memoria\n"); exit(1); }
+        for (uint32_t i = 0; i < old; i++)
+            if (ok[i]) {
+                uint32_t j = cow_slot(d, ok[i] - 1);
+                d->cow_key[j] = ok[i];
+                memcpy(d->cow_data + (size_t)j * BLK, od + (size_t)i * BLK, BLK);
+            }
+        free(ok); free(od);
+    }
+    uint32_t i = cow_slot(d, lba);
+    d->cow_key[i] = lba + 1;
+    d->cow_n++;
+    return d->cow_data + (size_t)i * BLK;
 }
 
 static int check(ScsiDev *d, uint8_t key, uint8_t asc)
@@ -202,14 +249,22 @@ int scsi_dev_exec(ScsiDev *d, const uint8_t *c, uint8_t *buf, uint32_t *len)
         fseek64(d->f, (int64_t)(lba * BLK), SEEK_SET);
         *len = (uint32_t)fread(buf, 1, (size_t)n * BLK, d->f);
         if (*len < n * BLK) { memset(buf + *len, 0, n * BLK - *len); *len = n * BLK; }
+        for (uint32_t k = 0; d->cow_n && k < n; k++) {
+            const uint8_t *p = cow_find(d, lba + k);
+            if (p) memcpy(buf + (size_t)k * BLK, p, BLK);
+        }
         d->reads += n;
         break;
     case 0x0A: case 0x2A: case 0x2E: case 0xAA:           /* WRITE */
         rw_args(c, &lba, &n);
         if (d->readonly) return check(d, 7, 0x27);
         if (lba + n > d->blocks) return check(d, 5, 0x21);
-        fseek64(d->f, (int64_t)(lba * BLK), SEEK_SET);
-        fwrite(buf, 1, (size_t)n * BLK, d->f);
+        if (d->snapshot) {
+            for (uint32_t k = 0; k < n; k++) memcpy(cow_add(d, lba + k), buf + (size_t)k * BLK, BLK);
+        } else {
+            fseek64(d->f, (int64_t)(lba * BLK), SEEK_SET);
+            fwrite(buf, 1, (size_t)n * BLK, d->f);
+        }
         d->writes += n;
         break;
     case 0x43: {                                          /* READ TOC: una traccia dati */

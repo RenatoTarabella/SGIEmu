@@ -26,8 +26,16 @@ typedef struct ScsiDev {
     uint8_t  sense_key, asc, ascq;
     char     vendor[9], product[17], revision[5];
     uint64_t reads, writes;   /* statistiche: blocchi */
+    /* SCSI_SNAPSHOT: il file resta com'e', i blocchi scritti stanno qui */
+    int      snapshot;
+    uint64_t *cow_key;        /* lba + 1, 0 = libero (indirizzamento aperto) */
+    uint8_t  *cow_data;
+    uint32_t cow_n, cow_cap;
 } ScsiDev;
 
+/* readonly: 0 = lettura e scrittura, 1 = sola lettura, SCSI_SNAPSHOT =
+   scritture tenute in memoria (per confrontare esecuzioni) */
+#define SCSI_SNAPSHOT 2
 int  scsi_dev_open(ScsiDev *d, int type, const char *path, int readonly);
 void scsi_dev_close(ScsiDev *d);
 

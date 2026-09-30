@@ -44,6 +44,7 @@ void pm_map_ram(PhysMem *pm, uint32_t base, uint32_t size, uint8_t *host, int fl
         pm->flags[first + k] = (uint8_t)flags;
         pm->io[first + k]    = 0;
     }
+    pm->map_gen++;
 }
 
 void pm_unmap(PhysMem *pm, uint32_t base, uint32_t size)
@@ -54,6 +55,7 @@ void pm_unmap(PhysMem *pm, uint32_t base, uint32_t size)
         pm->flags[first + k] = 0;
         pm->io[first + k] = 0;
     }
+    pm->map_gen++;
 }
 
 int pm_map_io(PhysMem *pm, uint32_t base, uint32_t size, void *ctx,
@@ -72,7 +74,40 @@ int pm_map_io(PhysMem *pm, uint32_t base, uint32_t size, void *ctx,
         pm->flags[p] = 0;
         pm->io[p] = (uint8_t)pm->nio;
     }
+    pm->map_gen++;
     return 0;
+}
+
+void pm_clear_mirrors(PhysMem *pm)
+{
+    pm->nmirror = 0;
+}
+
+void pm_add_mirror(PhysMem *pm, uint32_t a, uint32_t b, uint32_t size)
+{
+    if (pm->nmirror >= PM_MAX_MIRROR) return;
+    pm->mirror[pm->nmirror].a = a;
+    pm->mirror[pm->nmirror].b = b;
+    pm->mirror[pm->nmirror].size = size;
+    pm->nmirror++;
+}
+
+static void set_code1(PhysMem *pm, uint32_t pa, int on)
+{
+    uint8_t *f = &pm->flags[pa >> PM_PAGE_SHIFT];
+    if (on) *f |= PM_CODE; else *f &= (uint8_t)~PM_CODE;
+}
+
+void pm_set_code(PhysMem *pm, uint64_t pa, int on)
+{
+    if (pa >> 32) return;
+    uint32_t p = (uint32_t)pa;
+    set_code1(pm, p, on);
+    for (int k = 0; k < pm->nmirror; k++) {
+        uint32_t a = pm->mirror[k].a, b = pm->mirror[k].b, n = pm->mirror[k].size;
+        if (p - a < n) set_code1(pm, b + (p - a), on);
+        else if (p - b < n) set_code1(pm, a + (p - b), on);
+    }
 }
 
 /* il dispositivo che serve pa: con piu' dispositivi nella stessa pagina

@@ -11,6 +11,9 @@
  * Riga in uscita:
  *   exc hi lo fcsr r0..r31 f0..f31 mem
  * con exc = codice dell'eccezione presa, -1 se nessuna.
+ *
+ * Con R4K_JIT=N nell'ambiente il codice gira con il JIT (blocchi di al
+ * piu' N istruzioni) e r4k_run: dopo la fine del codice ci sono NOP.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,6 +46,9 @@ int main(void)
     if (!ram || pm_init(&pm) || r4k_init(&cpu, &pm)) return 1;
     pm_map_ram(&pm, 0, RAM_SIZE, ram, PM_RAM);
     cpu.exc_hook = on_exc;
+    const char *jv = getenv("R4K_JIT");
+    int jit = jv != NULL;
+    if (jit && r4k_jit_init(&cpu, atoi(jv))) return 1;
 
     static char line[1 << 16];
     while (fgets(line, sizeof line, stdin)) {
@@ -57,6 +63,7 @@ int main(void)
         int ncode = (int)next(&p);
         if (addr < 0x100000 || addr + 4 * (uint64_t)ncode > RAM_SIZE || ncode > 64) return 1;
         for (int k = 0; k < ncode; k++) wbe32(ram + addr + 4 * k, (uint32_t)next(&p));
+        r4k_jit_flush(c);
         int n = (int)next(&p);
         for (int k = 0; k < n; k++) { int i = (int)next(&p); c->r[i] = next(&p); }
         c->r[0] = 0;
@@ -76,7 +83,14 @@ int main(void)
         c->pc = addr;
         exc_taken = -1;
         uint64_t end = addr + 4 * (uint64_t)ncode;
-        for (int s = 0; s < MAXSTEP && exc_taken < 0 && c->pc != end; s++) r4k_step(c);
+        if (jit) {
+            /* dopo il codice solo NOP (la RAM e' vuota): lo stato finale e' lo stesso */
+            for (int k = 0; k < 64; k++) wbe32(ram + end + 4 * k, 0);
+            r4k_fast_prefill(c, DATA);         /* i dati per la via veloce del JIT */
+            r4k_run(c, MAXSTEP);
+        } else {
+            for (int s = 0; s < MAXSTEP && exc_taken < 0 && c->pc != end; s++) r4k_step(c);
+        }
 
         printf("%d %llx %llx %x", exc_taken, (unsigned long long)c->hi,
                (unsigned long long)c->lo, c->fcr31);

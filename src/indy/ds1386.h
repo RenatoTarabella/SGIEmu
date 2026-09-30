@@ -19,6 +19,10 @@ typedef struct Ds1386 {
     uint8_t  ram[DS1386_SIZE];
     int64_t  base_s;          /* secondi (epoch Unix) al tempo emulato 0 */
     int      dirty;           /* NVRAM cambiata: da salvare */
+    /* ultimo calcolo dei registri dell'ora (la PROM li legge in ciclo) */
+    uint64_t conv_cs;
+    int64_t  conv_base;
+    int      conv_ok;
 } Ds1386;
 
 void    rtc_init(Ds1386 *r, int64_t host_time);

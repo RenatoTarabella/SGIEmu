@@ -5,7 +5,9 @@ set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 if(MSVC)
-    add_compile_options(/W4 /wd4100 /D_CRT_SECURE_NO_WARNINGS /utf-8)
+    add_compile_options(/W4 /wd4100 /D_CRT_SECURE_NO_WARNINGS /utf-8 /Zi)
+    # simboli anche in Release, per il profiler di indy_boot (--prof)
+    add_link_options(/DEBUG /OPT:REF /OPT:ICF)
 else()
     add_compile_options(-Wall -Wextra -O2)
 endif()
@@ -17,6 +19,7 @@ add_library(r4kcore STATIC
     src/cpu/r4k_mmu.c
     src/cpu/r4k_cp0.c
     src/cpu/r4k_fpu.c
+    src/cpu/r4k_jit.c
     src/cpu/r4k_disasm.c
 )
 target_include_directories(r4kcore PUBLIC src)
@@ -55,8 +58,11 @@ target_link_libraries(test_devices indycore)
 add_test(NAME devices COMMAND test_devices)
 
 # Avvio dell'Indy da riga di comando (diagnostica del boot della PROM)
-add_executable(indy_boot tools/indy_boot.c)
+add_executable(indy_boot tools/indy_boot.c tools/prof.c)
 target_link_libraries(indy_boot indycore)
+if(WIN32)
+    target_link_libraries(indy_boot dbghelp winmm)
+endif()
 
 # Disassemblatore di file binari (PROM, kernel)
 add_executable(mipsdis tools/mipsdis.c)

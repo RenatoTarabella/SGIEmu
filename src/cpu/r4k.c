@@ -379,6 +379,11 @@ static inline void exec(R4k *c, uint32_t insn)
     }
 }
 
+void r4k_exec(R4k *c, uint32_t insn)
+{
+    exec(c, insn);
+}
+
 /* ---- ciclo di esecuzione ---- */
 
 static inline void step_one(R4k *c)
@@ -421,7 +426,21 @@ uint64_t r4k_run(R4k *c, uint64_t n)
         service(c);
         if (c->stop) break;
         c->limit = c->timer_event < c->run_end ? c->timer_event : c->run_end;
-        while (c->icount < c->limit) step_one(c);
+        if (c->jit) {
+            while (c->icount < c->limit) {
+                if (!c->branch_pending) {
+                    const uint8_t *code = r4k_jit_find(c);
+                    if (code == R4K_JIT_NOFIT) {        /* poche istruzioni al limite */
+                        while (c->icount < c->limit) step_one(c);
+                        break;
+                    }
+                    if (code) { r4k_jit_run(c, code); continue; }
+                }
+                step_one(c);
+            }
+        } else {
+            while (c->icount < c->limit) step_one(c);
+        }
     }
     return c->icount - start;
 }

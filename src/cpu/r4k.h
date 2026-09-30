@@ -108,6 +108,7 @@ typedef struct R4kFast {
 } R4kFast;
 
 struct R4k;
+struct R4kJit;
 typedef void (*R4kExcHook)(struct R4k *c, int code, void *user);
 
 typedef struct R4k {
@@ -152,6 +153,12 @@ typedef struct R4k {
     R4kExcHook exc_hook;
     void      *hook_user;
 
+    struct R4kJit *jit;        /* NULL = solo interprete              */
+    int      jit_exit;         /* il blocco in esecuzione deve uscire (codice riscritto) */
+    void    *jit_last;         /* ultima uscita concatenabile presa (JitExit) */
+    uint32_t jit_mxcsr;        /* MXCSR dopo un'operazione FPU tradotta */
+    uint32_t jit_gen;          /* cambia quando si invalidano blocchi (JitRet) */
+
     uint64_t exc_count[32];
     uint64_t flushes;                   /* svuotamenti completi della MMU veloce */
 
@@ -183,6 +190,22 @@ int  r4k_peek(R4k *c, uint64_t va, int size, uint64_t *val);
 
 /* invalidazione della MMU veloce (es. dopo aver cambiato la mappa fisica) */
 void r4k_fast_flush(R4k *c);
+/* mette la pagina di va nella MMU veloce senza eccezioni (test del JIT: le
+   load/store tradotte passano dalla via veloce solo se c'e'): 1 = fatto */
+int  r4k_fast_prefill(R4k *c, uint64_t va);
+
+/* JIT verso x86-64 (r4k_jit.c). Con il JIT attivo r4k_run esegue blocchi
+   tradotti, ma esattamente le stesse istruzioni dell'interprete: un blocco
+   parte solo se finisce prima del limite, e le eccezioni, gli interrupt
+   chiesti da un accesso e il codice riscritto lo fanno uscire subito.
+   max_block = istruzioni massime per blocco (0 = default). */
+int  r4k_jit_init(R4k *c, int max_block);
+void r4k_jit_free(R4k *c);
+void r4k_jit_flush(R4k *c);
+void r4k_jit_print_stats(const R4k *c);
+/* per i profiler: 1 = host_pc e' nel blocco che inizia a *va, 2 = nel
+   codice del JIT ma fuori dai blocchi, 0 = altrove */
+int  r4k_jit_owner(const R4k *c, const void *host_pc, uint64_t *va);
 
 /* registri FPU come li vede il programma (FR decide la disposizione) */
 uint32_t r4k_fpr_w(const R4k *c, int n);

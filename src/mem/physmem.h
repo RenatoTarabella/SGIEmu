@@ -45,6 +45,7 @@ typedef struct PmIo {
 } PmIo;
 
 #define PM_MAX_IO 255
+#define PM_MAX_MIRROR 4
 
 typedef struct PhysMem {
     uint8_t **host;             /* PM_NPAGES puntatori all'inizio pagina */
@@ -59,9 +60,16 @@ typedef struct PhysMem {
     PmIoWrite unmapped_write;
     void     *unmapped_ctx;
 
-    /* scrittura su una pagina PM_CODE (dopo averla eseguita) */
+    /* scrittura su una pagina PM_CODE (prima di farla) */
     void    (*code_write)(void *ctx, uint32_t pa);
     void     *code_ctx;
+
+    /* specchi: [a, a+size) e [b, b+size) sono la stessa memoria host, per
+       marcare PM_CODE su tutti e due */
+    struct { uint32_t a, b, size; } mirror[PM_MAX_MIRROR];
+    int       nmirror;
+
+    uint32_t  map_gen;          /* cresce a ogni cambio della mappa */
 } PhysMem;
 
 int  pm_init(PhysMem *pm);
@@ -72,6 +80,13 @@ void pm_map_ram(PhysMem *pm, uint32_t base, uint32_t size, uint8_t *host, int fl
 void pm_unmap(PhysMem *pm, uint32_t base, uint32_t size);
 int  pm_map_io(PhysMem *pm, uint32_t base, uint32_t size, void *ctx,
                PmIoRead rd, PmIoWrite wr, const char *name);
+
+/* Specchi: chi cambia la mappa li toglie (pm_clear_mirrors) e li registra
+   di nuovo. */
+void pm_clear_mirrors(PhysMem *pm);
+void pm_add_mirror(PhysMem *pm, uint32_t a, uint32_t b, uint32_t size);
+/* PM_CODE sulla pagina di pa e sui suoi specchi */
+void pm_set_code(PhysMem *pm, uint64_t pa, int on);
 
 /* Accesso generico (RAM, ROM o I/O) per DMA e vie lente. 0 = ok. */
 int  pm_read (PhysMem *pm, uint64_t pa, int size, uint64_t *val);

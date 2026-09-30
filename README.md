@@ -31,16 +31,24 @@ The CPU:
   rounding modes, IEEE flags/causes/enables, MIPS "legacy" NaNs
 - CACHE instruction (tag arrays for the index operations, used by the PROM
   and by kernels to size the caches)
-- a fast MMU (virtual page → host pointer, per privilege mode), designed for
-  the pre-decoding interpreter and JIT that come later
+- a fast MMU (virtual page → host pointer, per privilege mode)
+- a JIT to x86-64: blocks indexed by physical address (they survive TLB and
+  ASID changes), inline fast-MMU loads/stores, direct block chaining and a
+  jump cache for register jumps; uncommon instructions call the interpreter.
+  It executes exactly the same instructions as the interpreter (same
+  instruction counts, exceptions and interrupts at the same points): IRIX 5.3
+  and 6.5 boots give bit-identical results with and without it.
 
-About 200 million instructions per second while booting IRIX, as a plain
-interpreter: twice a 100 MHz Indy. The window runs at real time.
+Booting IRIX 5.3 to a root shell (215 s of emulated time) takes about 8 s
+with the JIT and 100 s with the plain interpreter (~200 MIPS, twice a
+100 MHz Indy). The window runs at real time; `--mips N` sets the emulated
+CPU speed.
 
 ## Running it
 
 ```
 build\Release\indy.exe [--prom roms\ip24prom.bin] [--disk disks\irix53.img] [--cdrom cdrom\x.iso]
+                       [--mips N] [--nojit]
 ```
 
 Without arguments it looks for `roms\ip24prom.bin` and `disks\irix53.img`.
@@ -58,6 +66,7 @@ build\Release\test_r4k.exe                    # CPU unit tests (TLB, exceptions,
 build\Release\test_devices.exe                # the Indy chips one by one
 .venv\Scripts\python tests\diff_unicorn.py    # differential test against Unicorn
 build\Release\test_r4k.exe --bench            # interpreter speed
+set R4K_JIT=64                                # the same tests and benchmark with the JIT
 ```
 
 The differential test needs a Python virtual environment with Unicorn:

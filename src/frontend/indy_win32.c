@@ -2,7 +2,10 @@
  * indy_win32.c - L'Indy in una finestra: schermo Newport, tastiera e mouse PS/2
  *
  *   indy [--prom FILE] [--disk IMG] [--disk2 IMG] [--cdrom ISO] [--ram MB]
- *        [--nvram FILE] [--gfx 8|24] [--mips N]
+ *        [--nvram FILE] [--gfx 8|24] [--mips N] [--nojit]
+ *
+ * La CPU gira con il JIT (--nojit: solo interprete, per confronto).
+ * --mips N e' la velocita' della CPU emulata (100 = un'Indy a 100 MHz).
  *
  * Senza argomenti cerca roms\ip24prom.bin e disks\irix53.img. La NVRAM
  * (orologio e ambiente della PROM) si salva all'uscita in roms\nvram\indy.nvram;
@@ -246,6 +249,7 @@ int main(int argc, char **argv)
 {
     const char *prom_path = NULL, *disk_path[2] = { NULL, NULL }, *cdrom_path = NULL, *nvram_arg = NULL;
     unsigned ram_mb = 64, mips = 100;
+    int jit = 1;
     int gfx = 8;
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
@@ -257,6 +261,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--nvram") && v) { nvram_arg = v; i++; }
         else if (!strcmp(a, "--gfx") && v) { gfx = atoi(v); i++; }
         else if (!strcmp(a, "--mips") && v) { mips = (unsigned)atoi(v); i++; }   /* CPU emulata piu' veloce */
+        else if (!strcmp(a, "--nojit")) jit = 0;
     }
     /* la console seriale va nel terminale che ha lanciato il programma */
     if (AttachConsole(ATTACH_PARENT_PROCESS)) { freopen("CONOUT$", "w", stdout); printf("\n"); }
@@ -276,7 +281,8 @@ int main(int argc, char **argv)
     uint8_t *prom = load_file(prom_path, &prom_size);
     if (!prom) fail("Non riesco a leggere la PROM");
     if (indy_init(&app.m, prom, (uint32_t)prom_size, ram_mb, gfx)) fail("Memoria insufficiente");
-    if (mips >= 10 && mips <= 1000) app.m.ps_per_insn = 1000000u / mips;
+    if (mips >= 10 && mips <= 5000) app.m.ps_per_insn = 1000000u / mips;
+    if (jit && r4k_jit_init(&app.m.cpu, 0)) fail("Memoria insufficiente per il JIT");
     free(prom);
     app.m.scc.tx = on_tx;
 

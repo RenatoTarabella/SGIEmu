@@ -37,6 +37,7 @@ int r4k_init(R4k *c, PhysMem *pm)
 
 void r4k_free(R4k *c)
 {
+    r4k_jit_free(c);
     free(c->ictag); c->ictag = NULL;
     free(c->dctag); c->dctag = NULL;
     free(c->sctag); c->sctag = NULL;

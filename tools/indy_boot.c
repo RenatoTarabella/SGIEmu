@@ -20,6 +20,7 @@
 #include "indy/indy.h"
 #include "cpu/r4k_disasm.h"
 #include "frontend/png.h"
+#include "prof.h"
 
 static Indy M;
 static long exc_print_left = 20;
@@ -157,6 +158,21 @@ static uint8_t *load_file(const char *path, long *size)
     return p;
 }
 
+/* FNV-1a sui registri visibili della CPU */
+static uint64_t state_hash(const R4k *c)
+{
+    uint64_t h = 0xCBF29CE484222325ull;
+    const uint64_t *v[4] = { c->r, c->fpr, &c->hi, &c->lo };
+    const int n[4] = { 32, 32, 1, 1 };
+    for (int a = 0; a < 4; a++)
+        for (int i = 0; i < n[a]; i++)
+            for (int b = 0; b < 64; b += 8) { h ^= (v[a][i] >> b) & 0xFF; h *= 0x100000001B3ull; }
+    static const int cp0[] = { CP0_STATUS, CP0_CAUSE, CP0_EPC, CP0_ENTRYHI, CP0_BADVADDR };
+    for (int i = 0; i < 5; i++) { h ^= c->cp0[cp0[i]]; h *= 0x100000001B3ull; }
+    h ^= c->pc; h *= 0x100000001B3ull;
+    return h;
+}
+
 static void usage(void)
 {
     printf("uso: indy_boot --prom FILE [--nvram FILE] [--ram MB] [--ms MS] [--keys TESTO]\n"
@@ -168,8 +184,10 @@ int main(int argc, char **argv)
 {
     const char *prom_path = NULL, *nvram_path = "roms/nvram/rtc", *keys = "";
     unsigned ram_mb = 64, mips = 0;
-    uint64_t ms = 5000, trace_at = 0;
+    uint64_t ms = 5000, trace_at = 0, hash_ms = 0;
     long trace = 0;
+    int jit = 0, jit_block = 0, snapshot = 0, prof = 0;
+    long long rtc_time = -1;
     for (int k = 1; k < argc; k++) {
         const char *a = argv[k], *v = k + 1 < argc ? argv[k + 1] : NULL;
         if (!strcmp(a, "--prom") && v) { prom_path = v; k++; }
@@ -202,6 +220,12 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--gfx") && v) { gfx = !strcmp(v, "none") ? 0 : atoi(v); k++; }
         else if (!strcmp(a, "--disk") && v) { disk_path[ndisk++ & 7] = v; k++; }
         else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; k++; }
+        else if (!strcmp(a, "--jit")) jit = 1;
+        else if (!strcmp(a, "--jit-block") && v) { jit = 1; jit_block = atoi(v); k++; }
+        else if (!strcmp(a, "--snapshot")) snapshot = 1;
+        else if (!strcmp(a, "--prof")) prof = 1;
+        else if (!strcmp(a, "--rtc") && v) { rtc_time = strtoll(v, NULL, 0); k++; }
+        else if (!strcmp(a, "--hash") && v) { hash_ms = strtoull(v, NULL, 0); k++; }
         else usage();
     }
     if (!prom_path) usage();
@@ -232,7 +256,7 @@ int main(int argc, char **argv)
     if (scsi_log) M.scsi.log = scsi_cmd_log;
     /* dischi a partire dall'ID 1 (dksc(0,1) e' il disco di sistema), CD-ROM al 4 */
     for (int k = 0; k < ndisk; k++)
-        if (indy_attach_scsi(&M, 1 + k + (k >= 3), SCSI_DISK, disk_path[k], 0))
+        if (indy_attach_scsi(&M, 1 + k + (k >= 3), SCSI_DISK, disk_path[k], snapshot ? SCSI_SNAPSHOT : 0))
             { printf("non riesco ad aprire %s\n", disk_path[k]); return 1; }
         else printf("SCSI %d: disco %s (%llu MB)\n", 1 + k + (k >= 3), disk_path[k],
                     (unsigned long long)(M.disk[1 + k + (k >= 3)].blocks >> 11));
@@ -240,6 +264,8 @@ int main(int argc, char **argv)
         if (indy_attach_scsi(&M, 4, SCSI_CDROM, cdrom_path, 1)) { printf("non riesco ad aprire %s\n", cdrom_path); return 1; }
         printf("SCSI 4: CD-ROM %s\n", cdrom_path);
     }
+    if (rtc_time >= 0) M.rtc.base_s = rtc_time;
+    if (jit && r4k_jit_init(&M.cpu, jit_block)) { printf("JIT: memoria\n"); return 1; }
     M.cpu.exc_hook = on_exc;
     M.scc.tx = on_tx;
     printf("PROM %s: %ld byte, RAM %u MB\n", prom_path, prom_size, ram_mb);
@@ -248,8 +274,16 @@ int main(int argc, char **argv)
     const uint64_t per_ms = indy_insn_per_ms(&M);
     uint64_t total = ms * per_ms, done = 0;
     uint64_t next_key = 1000 * per_ms;
+    uint64_t next_hash = hash_ms * per_ms;
     const char *kp = keys;
+    clock_t t_start = clock();
+    if (prof) prof_start(&M.cpu);
     while (done < total && !M.power_off) {
+        if (hash_ms && M.cpu.icount >= next_hash) {         /* --hash: impronta dello stato */
+            printf("H %llu %016llX %016llX\n", (unsigned long long)M.cpu.icount,
+                   (unsigned long long)M.cpu.pc, (unsigned long long)state_hash(&M.cpu));
+            next_hash += hash_ms * per_ms;
+        }
         if (bp_addr) {                                  /* --bp: a passi, stampa i registri */
             uint64_t stop = done + per_ms;
             while (done < stop && done < total && !M.power_off) {
@@ -333,6 +367,11 @@ int main(int argc, char **argv)
 
     printf("%s\n%.3f s emulati, %llu istruzioni%s\n", col0 ? "" : "\n", done / (double)per_ms / 1000,
            (unsigned long long)M.cpu.icount, M.power_off ? " (spenta)" : "");
+    double real_s = (double)(clock() - t_start) / CLOCKS_PER_SEC;
+    printf("%.2f s reali, %.0f MIPS, stato %016llX\n", real_s,
+           real_s > 0 ? (double)done / real_s / 1e6 : 0.0, (unsigned long long)state_hash(&M.cpu));
+    r4k_jit_print_stats(&M.cpu);
+    if (prof) prof_stop_print();
     trace_one(&M.cpu);
     R4k *c = &M.cpu;
     printf("Status=%08llX Cause=%08llX EPC=%016llX BadVAddr=%016llX\n",

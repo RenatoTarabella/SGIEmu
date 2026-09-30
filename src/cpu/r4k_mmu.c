@@ -169,6 +169,16 @@ void r4k_fast_flush_tlb_entry(R4k *c, const R4kTlb *e)
     }
 }
 
+void r4k_fast_protect(R4k *c, uintptr_t host_page)
+{
+    for (int m = 0; m < 3; m++)
+        for (uint32_t i = 0; i < R4K_FAST_SIZE; i++) {
+            R4kFast *f = &c->fast[m][i];
+            if (f->tag_w != R4K_FAST_INVALID && (uintptr_t)f->tag_w + f->addend == host_page)
+                f->tag_w = R4K_FAST_INVALID;
+        }
+}
+
 /* ---- vie lente ---- */
 
 int r4k_read_slow(R4k *c, uint64_t va, int size, uint64_t *val)
@@ -215,6 +225,19 @@ int r4k_fetch_slow(R4k *c, uint64_t va, uint32_t *insn)
     if (pm_read(c->pm, pa, 4, &v)) { r4k_exception(c, EXC_IBE, 0); return 0; }
     *insn = (uint32_t)v;
     return 1;
+}
+
+int r4k_fetch_fill(R4k *c, uint64_t va)
+{
+    uint64_t pa; int wr;
+    if (va & 3 || xlate_core(c, va, 0, &pa, &wr)) return 0;
+    fast_fill(c, va, pa, wr);
+    return 1;
+}
+
+int r4k_fast_prefill(R4k *c, uint64_t va)
+{
+    return r4k_fetch_fill(c, va & ~(uint64_t)3);
 }
 
 int r4k_peek(R4k *c, uint64_t va, int size, uint64_t *val)

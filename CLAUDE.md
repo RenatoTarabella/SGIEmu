@@ -20,13 +20,16 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
 - `src/cpu` R4400: `r4k.c` run loop and integer instructions, `r4k_mmu.c`
   address translation / TLB lookup / fast MMU / slow memory paths,
   `r4k_cp0.c` CP0 registers, TLB instructions, exceptions, interrupts,
-  timer, CACHE; `r4k_fpu.c` CP1; `r4k_disasm.c`. `r4k_internal.h` has the
-  inline load/store fast paths shared by these files (not API).
+  timer, CACHE; `r4k_fpu.c` CP1; `r4k_disasm.c`; `r4k_jit.c` the JIT to
+  x86-64 (emitter, block compiler, block cache, chaining, jump cache).
+  `r4k_internal.h` has the inline load/store fast paths shared by these
+  files (not API).
 - `src/mem/physmem.c` physical address space: 4 KB pages, RAM/ROM as direct
   host pointers, I/O through device callbacks.
 - `tests/test_r4k.c` unit tests; `tests/r4k_oracle.c` + `tests/diff_unicorn.py`
   differential test against Unicorn.
-- `tools/indy_boot.c` headless boot of the PROM (like `archie_boot`).
+- `tools/indy_boot.c` headless boot of the PROM (like `archie_boot`);
+  `tools/prof.c` its sampling profiler (`--prof`).
 - `src/indy` the machine: `indy.c` (assembly, physical map, run loop in
   slices of 2000 instructions), `mc.c` (MC: registers, RPSS, RAM banks from
   MEMCFG, VDMA fill), `hpc3.c` (HPC3 + IOC + INT3 routing), and one file per
@@ -73,7 +76,40 @@ build\Release\test_devices.exe            # chips one by one
 build\Release\indy_boot.exe --prom roms\ip24prom.bin [--disk IMG] [--cdrom ISO] [--ms 5000]
                              [--keys "..."] [--trace N] [--trace-at ADDR] [--io N] [--exc N]
                              [--mc] [--scsi] [--nvlog] [--dis ADDR] [--ram MB] [--nvram FILE]
+                             [--jit] [--jit-block N] [--snapshot] [--rtc T] [--hash MS] [--prof]
+R4K_JIT=N build\Release\test_r4k.exe          # unit tests / --bench with the JIT (blocks <= N)
+R4K_JIT=N .venv\Scripts\python tests\diff_unicorn.py ...   # r4k_oracle with the JIT
 ```
+
+JIT workflow. `--jit` turns it on in indy_boot (the window has it on by
+default, `--nojit` turns it off). `--snapshot` keeps disk writes in memory
+(the image is not touched, runs are repeatable), `--rtc T` fixes the clock
+(Unix time; otherwise the host time makes every run different), `--hash MS`
+prints `H icount pc hash` of the CPU state every MS emulated ms. The JIT must
+give the *same* hashes as the interpreter: run the same command with and
+without `--jit` and diff the `H` lines (the first differing line brackets
+the bug; then `--trace`). Reference runs, both identical with the JIT:
+
+```
+indy_boot --prom roms\ip24prom.bin --disk disks\irix53.img --snapshot --rtc 1790000000 --hash 1000
+          --ms 215000 --io 0 --exc 0 --keys "{T=7}1{CR}{T=200}root{CR}{T=203}{CR}{T=206}uname -a{CR}{T=208}hinv{CR}"
+indy_boot --prom roms\ip24prom.bin --nvram roms\nvram\indy-us.nvram --disk disks\irix65.img --snapshot
+          --rtc 1790000000 --hash 2000 --ram 128 --ms 210000 --io 0 --exc 0 --kbd --keys "{T=205}{PNG}" --png x
+```
+(5.3: ~7 s with the JIT, ~100 s without; 6.5 to the graphical login: ~18 s
+and ~100 s.) **The reference hashes depend on the disk contents**: `--snapshot`
+protects the image from indy_boot, not from the user's `indy.exe` sessions,
+so after the user has used a disk in the window, regenerate the interpreter
+reference before comparing (a whole-run divergence at the same point for
+interpreter and JIT means a stale reference, not a JIT bug). A GL/FPU check:
+the desktop with `bin/atlantis &` in /usr/demos (same keys as the buttonfly
+run, `--ms 250000`). Debug switches: `R4K_JIT_NOREGS=1` (no host register
+caching), `R4K_JIT_NOFPU=1` (COP1 through the interpreter) to bisect a
+divergence. `--prof` samples the main thread at 1 kHz and prints host
+functions (PDB symbols, Release builds have them) and the hottest JIT blocks
+by MIPS address; the JIT statistics at the end list blocks, invalidations,
+flushes, why the dispatcher was entered, and the instructions and pcs that
+still go through the interpreter.
 
 `indy_boot` prints the serial console on stdout. `--keys` types on the
 serial port after 1 s emulated (`{CR}` Enter, `{WAIT}` half a second); the
@@ -167,6 +203,53 @@ sides so kuseg is unmapped and addresses are physical.
   lazily; `timer_event` is the icount at which Count == Compare.
 - 32-bit ALU ops use the low 32 bits of the operands and sign-extend the
   result (unpredictable in the architecture for non-sign-extended inputs).
+
+## JIT invariants (r4k_jit.c)
+
+- **Exactness**: the JIT executes exactly the instructions the interpreter
+  would. A block runs only if `ninsn <= limit - icount` (else the dispatcher
+  interprets up to the limit, `R4K_JIT_NOFIT`); every chained jump and jump
+  cache hit checks the same budget. A helper (the interpreter for one
+  instruction) returns "exit" on exception/ERET (`pc_set`), kick
+  (`limit == 0`), `jit_exit` (code rewritten, flush, physical map changed).
+  Helpers get pc, delay slot flag and the count of block instructions up to
+  and including theirs (kd), so EPC/BD/icount are exact. Keep it that way:
+  the equivalence of whole IRIX boots is the main test.
+- Blocks are keyed by (host pointer, va, mode | allow64 << 2); they never
+  cross a 4 KB page; a branch whose delay slot is outside the block, or a
+  branch in a delay slot, is left to the interpreter.
+- MIPS registers live in `R4k` (rbx = R4k*); rax/rcx/rdx/r8-r10 are
+  scratch. Each block is compiled twice: the first pass counts register
+  uses, the second keeps the most used MIPS registers in the callee-saved
+  host registers (rbp rsi rdi r12-r15; only rbp r12-r15 on System V),
+  loaded at block entry. Every GPR access goes through `gpr_ld/gpr_st/...`;
+  dirty ones are written back before every helper call and exit (the stub
+  records the dirty mask of its origin); after a helper, rt and rd are
+  reloaded (the only GPRs an interpreted instruction can write).
+- Conditional branches store the resolved next pc in `branch_target` before
+  the delay slot (a helper exiting in the slot uses it).
+- The block key also holds Status.FR, Status.CU1 and FCSR.RM (CTC1 ends the
+  block). FPU operations run on SSE with a clean MXCSR (rounding from RM)
+  and read the flags back: anything but inexact (invalid, overflow,
+  underflow, divide by zero), a NaN/infinite/denormal result or an enabled
+  inexact trap re-executes the instruction in the interpreter, which has
+  all the MIPS NaN/FS rules. MXCSR goes back to the C default after RM != 0.
+- `jr`/`jalr` in kernel kseg0/kseg1 blocks first check a per-site JitRet
+  (last kseg0/1 target, filled by `dyn_ret`), valid while its `gen` equals
+  `c->jit_gen` (bumped by every invalidation and flush).
+- Code pages: compiling sets PM_CODE on the physical page (and its mirrors,
+  `pm_add_mirror`: the MC maps the first 512 KB at 0x08000000 too) and
+  removes fast write tags to that host page (`r4k_fast_protect`).
+  `code_write` drops the page's blocks, their chain links and jump cache
+  entries, clears PM_CODE, sets `jit_exit`. Any change of the physical map
+  (`pm->map_gen`) flushes everything.
+- Chaining: only constant targets in the same virtual page as the block, or
+  kseg0/kseg1 to kseg0/kseg1 in kernel mode (translation cannot differ).
+  Exits after COP0 writes in mapped code are never chained. Register jumps,
+  other exits, exceptions and ERET go through `dyn` (shared stub: fast MMU
+  of the *current* mode + jump cache by host pointer); misses go to C.
+- In kseg0/kseg1 blocks COP0 instructions do not end the block (the TLB
+  cannot change that code; Status/Cause/Compare writes kick, ERET sets pc).
 
 ## Known, deliberate differences from Unicorn/QEMU
 
@@ -361,6 +444,13 @@ R4400:
   the `NAN` macro was false: test NaNs on the bit patterns, never via `NAN`.
 - `r4k_stop` from an exception hook inside `service()` must be honoured
   before the inner loop starts again.
+- The Bash heredoc rule above also bites Python one-liners that contain C
+  `printf("...\n")`: write edit scripts with the Write tool (scratchpad) and
+  run them, or use the Edit tool.
+- Host timing is noisy (the same indy_boot run varies 7.5-10.5 s): compare
+  speed changes with repeated runs or with `--prof` percentages.
+- The PROM's delay loops read the DS1386 tens of millions of times; the
+  calendar conversion is cached per hundredth of a second.
 - Unicorn caches translated blocks: every case goes at a fresh address and
   `ctl_remove_cache` is called; the code area must stay inside mapped RAM.
 
@@ -409,8 +499,27 @@ R4400:
    switch between PS/2 keyboard and serial mid-session (graphical login,
    then commands and shutdown on the serial console). With `--mips 200`
    the 6.5 boot runs at ~187 MIPS real.
-6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
-   **Next session starts here** (agreed with the user 2026-09-30): the
-   emulation is good enough that IRIX 5.3/6.5 desktops are the test bed;
-   today ~170-210 MIPS real, `--mips` sets the emulated speed.
+6. Speed: JIT to x86-64 — first version done (2026-09-30). The planned
+   pre-decoded interpreter was skipped: the JIT falls back to the
+   interpreter per instruction instead. Verified by the unit tests and the
+   Unicorn diff with `R4K_JIT`, and by bit-identical IRIX 5.3 (shell) and
+   6.5 (graphical login) boots with and without JIT (`--hash`). Bench loop
+   4400 MIPS (interpreter 390); IRIX 5.3 boot 8 s instead of 100 s. The
+   boot time is now mostly IRIX's idle loop.
+   Same day, second round: native FPU (SSE, see JIT invariants), host
+   register caching, SC, LWL/LWR/LDL/LDR, DIV/DIVU, MTC0 of
+   EntryLo0/1/PageMask, the `jr` return cache. The Unicorn oracle now
+   prefills the fast MMU for the data page in JIT mode (before, every
+   single-instruction memory case took the slow path and the translated
+   fast paths were only tested by the IRIX runs). Bench 4760 MIPS; 5.3
+   boot ~7 s, 6.5 ~18 s, atlantis desktop 250 s emulated in ~22 s. In GL
+   demos the Newport rendering (`to_screen`, `put_pixel`, `pack_rgb`) is
+   now the largest cost, and GL's stores to REX3 registers are I/O.
+   Still interpreted: LL (LLAddr needs the physical address), SWL/SWR/SDL/
+   SDR, TLBWR/ERET, traps, ROUND/CEIL/FLOOR and L-format FPU conversions.
+   Other ideas: `tlb_map` (linear 48-entry scan, ~3%); bigger `SLICE` in
+   indy.c (every 2000 instructions the JIT goes back to C). Idle skipping
+   (fast-forward when IRIX idles) would change timing: ask the user first.
+   Open glitch seen by the user in the window (with and without JIT): black
+   areas in context menus while moving up and down the entries.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.

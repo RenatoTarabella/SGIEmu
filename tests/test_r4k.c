@@ -6,6 +6,10 @@
  *
  *   test_r4k            tutti i test
  *   test_r4k --bench    velocita' dell'interprete (milioni di istruzioni al secondo)
+ *
+ * Con la variabile d'ambiente R4K_JIT=N gira con il JIT (blocchi di al piu'
+ * N istruzioni: i test contano le istruzioni esatte, un blocco parte solo
+ * se ci sta tutto).
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,6 +91,7 @@ static void on_exc(R4k *cc, int code, void *user)
 static void setup(void)
 {
     memset(ram, 0, RAM_SIZE);
+    r4k_jit_flush(c);
     r4k_reset(c);
     memset(c->fpr, 0, sizeof c->fpr);
     r4k_cp0_write(c, CP0_STATUS, ST_CU1 | ST_FR);
@@ -98,6 +103,7 @@ static void setup(void)
 static void put(uint32_t pa, const uint32_t *w, int n)
 {
     for (int k = 0; k < n; k++) wbe32(ram + pa + 4 * k, w[k]);
+    r4k_jit_flush(c);                   /* scritto senza passare dalla CPU */
 }
 
 #define CODE(...) do { const uint32_t code_[] = { __VA_ARGS__ }; \
@@ -555,6 +561,8 @@ static void test_code_pages(void)
 {
     printf("pagine di codice: le scritture non passano dalla via veloce\n");
     setup();
+    void (*saved)(void *, uint32_t) = pm.code_write;
+    void *saved_ctx = pm.code_ctx;
     pm.code_write = on_code_write;
     code_writes = 0;
     c->r[A0] = KSEG0 + 0x5000;
@@ -565,7 +573,8 @@ static void test_code_pages(void)
     run(2);
     CHECK_EQ(code_writes, 2);
     pm.flags[5] &= ~PM_CODE;
-    pm.code_write = NULL;
+    pm.code_write = saved;
+    pm.code_ctx = saved_ctx;
 }
 
 static void test_disasm(void)
@@ -594,6 +603,7 @@ static void bench(void)
     r4k_run(c, n);
     double s = (double)(clock() - t0) / CLOCKS_PER_SEC;
     printf("%llu istruzioni in %.2f s: %.0f MIPS\n", (unsigned long long)n, s, n / s / 1e6);
+    r4k_jit_print_stats(c);
 }
 
 int main(int argc, char **argv)
@@ -602,6 +612,8 @@ int main(int argc, char **argv)
     if (!ram || pm_init(&pm) || r4k_init(c, &pm)) { printf("memoria\n"); return 1; }
     pm_map_ram(&pm, 0, RAM_SIZE, ram, PM_RAM);
     c->exc_hook = on_exc;
+    const char *jv = getenv("R4K_JIT");
+    if (jv && r4k_jit_init(c, atoi(jv))) { printf("JIT\n"); return 1; }
 
     if (argc > 1 && !strcmp(argv[1], "--bench")) { bench(); return 0; }
 

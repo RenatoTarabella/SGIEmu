@@ -190,6 +190,8 @@ void indy_mc_remap(Indy *m)
         }
     }
     /* i primi 512 KB fisici ripetono l'inizio della RAM a 0x08000000 */
+    pm_clear_mirrors(pm);
+    pm_add_mirror(pm, 0, 0x08000000u, 0x80000u);
     for (uint32_t off = 0; off < 0x80000u; off += PM_PAGE_SIZE) {
         uint32_t page = (0x08000000u + off) >> PM_PAGE_SHIFT;
         if (pm->host[page]) pm_map_ram(pm, off, PM_PAGE_SIZE, pm->host[page], PM_RAM);

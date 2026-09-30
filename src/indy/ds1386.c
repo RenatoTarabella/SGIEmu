@@ -38,6 +38,9 @@ static void civil_from_days(int64_t z, int *y, int *m, int *d)
 
 static void clock_to_regs(Ds1386 *r, uint64_t now_ns)
 {
+    uint64_t cs = now_ns / 10000000u;
+    if (r->conv_ok && cs == r->conv_cs && r->base_s == r->conv_base) return;
+    r->conv_ok = 1; r->conv_cs = cs; r->conv_base = r->base_s;
     int64_t t = r->base_s + (int64_t)(now_ns / 1000000000u);
     int64_t days = t >= 0 ? t / 86400 : (t - 86399) / 86400;
     int64_t sec = t - days * 86400;
@@ -95,6 +98,7 @@ uint8_t rtc_read(Ds1386 *r, int reg, uint64_t now_ns)
 void rtc_write(Ds1386 *r, int reg, uint8_t v, uint64_t now_ns)
 {
     reg &= DS1386_SIZE - 1;
+    r->conv_ok = 0;
     if (reg == R_CMD) {
         int te_on = !(r->ram[R_CMD] & CMD_TE) && (v & CMD_TE);
         int te_off = (r->ram[R_CMD] & CMD_TE) && !(v & CMD_TE);

@@ -40,9 +40,21 @@ void r4k_cop1(R4k *c, uint32_t insn);
 int r4k_read_slow (R4k *c, uint64_t va, int size, uint64_t *val);
 int r4k_write_slow(R4k *c, uint64_t va, int size, uint64_t val);
 int r4k_fetch_slow(R4k *c, uint64_t va, uint32_t *insn);
+/* riempie la MMU veloce per una fetch, senza eccezioni: 1 = tradotto */
+int r4k_fetch_fill(R4k *c, uint64_t va);
 /* traduzione con eccezioni: 1 = ok */
 int r4k_translate(R4k *c, uint64_t va, int acc, uint64_t *pa);
 void r4k_fast_flush_tlb_entry(R4k *c, const R4kTlb *e);
+/* toglie la scrittura veloce sulle voci che puntano alla pagina host */
+void r4k_fast_protect(R4k *c, uintptr_t host_page);
+
+/* ---- interprete e JIT ---- */
+void r4k_exec(R4k *c, uint32_t insn);          /* una istruzione gia' letta, al pc corrente */
+/* blocco per c->pc; NULL = un passo di interprete, R4K_JIT_NOFIT = il
+   blocco non sta prima di c->limit: interprete fino al limite */
+const uint8_t *r4k_jit_find(R4k *c);
+#define R4K_JIT_NOFIT ((const uint8_t *)1)
+void r4k_jit_run(R4k *c, const uint8_t *code);
 
 static inline R4kFast *r4k_fast(R4k *c, uint64_t va)
 {
