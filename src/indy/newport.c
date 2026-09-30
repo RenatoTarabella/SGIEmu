@@ -166,7 +166,14 @@ static uint32_t unpack_rgb(uint32_t dm1, uint32_t p)
 static uint32_t draw_color(const Newport *n)
 {
     uint32_t dm1 = n->drawmode1;
-    if (dm1 & DM1_FCLR) return n->colorvram & depth_mask(dm1);   /* fast clear */
+    if (dm1 & DM1_FCLR) {                                        /* fast clear */
+        uint32_t cv = n->colorvram;
+        /* RGB a doppio buffer (4 e 12 bit): GL da' il colore in 8:8:8
+           (buttonfly: 0x191919 = grigio 0,1) */
+        if ((dm1 & DM1_RGBMD) && (DM1_DD(dm1) == 0 || DM1_DD(dm1) == 2))
+            return pack_rgb(dm1 & ~DM1_DITHER, cv & 0xFF, (cv >> 8) & 0xFF, (cv >> 16) & 0xFF, 0, 0);
+        return cv & depth_mask(dm1);
+    }
     if (!(dm1 & DM1_RGBMD)) return (n->colorred >> 11) & 0xFFF & depth_mask(dm1);   /* CI: parte intera del rosso */
     return pack_rgb(dm1 & ~DM1_DITHER, (n->colorred >> 11) & 0xFF, (n->colorgrn >> 11) & 0xFF,
                     (n->colorblue >> 11) & 0xFF, 0, 0);

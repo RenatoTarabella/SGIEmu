@@ -304,6 +304,12 @@ R4400:
   the end points: GL draws points that way (dm0 0x0A, only xstartf/ystartf
   written with a 64-bit go), one pixel. Drawing to the stale xend/yend gave
   the fans of rays converging on a corner in Meteor Blast.
+- XL24 (`--gfx 24`): CMAP board revision must be 2 (bits 6:4); from 3 up
+  the PROM reads the monitor elsewhere and picks 1024x768. GL double
+  buffered RGB is 12 bit per buffer: buffer 0 in bits 11:0, buffer 1 in
+  23:12 (GL wrmask 0xFFF / 0xFFF000), shown as 4:4:4 (XMAP mode size 2,
+  RGB). In RGB 4/12-bit fast clear colorvram is 8:8:8 and gets packed
+  (buttonfly 0x191919). Open: buttonfly's button colours on XL24.
 - Pattern commands (go on zpattern): with drawmode0 L32 (0x8000) at most 32
   pixels (X text, `0x9106`); without L32 but with STOPX they run to xend
   (GL `charstr` text, `0x1106`, one glyph row per command). Drawing one
