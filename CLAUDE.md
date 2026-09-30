@@ -309,7 +309,10 @@ R4400:
   buffered RGB is 12 bit per buffer: buffer 0 in bits 11:0, buffer 1 in
   23:12 (GL wrmask 0xFFF / 0xFFF000), shown as 4:4:4 (XMAP mode size 2,
   RGB). In RGB 4/12-bit fast clear colorvram is 8:8:8 and gets packed
-  (buttonfly 0x191919). Open: buttonfly's button colours on XL24.
+  (buttonfly 0x191919). buttonfly and ideas_ogl look right on XL24.
+- Open: the "textured cube" demo (software texturing) shows horizontal
+  smears on XL8 and XL24; suspect the unimplemented VDMA zoom (STRIDE
+  bits 16+, DMA_COUNT) or pixel zoom used by lrectwrite.
 - Pattern commands (go on zpattern): with drawmode0 L32 (0x8000) at most 32
   pixels (X text, `0x9106`); without L32 but with STOPX they run to xend
   (GL `charstr` text, `0x1106`, one glyph row per command). Drawing one
@@ -407,4 +410,7 @@ R4400:
    then commands and shutdown on the serial console). With `--mips 200`
    the 6.5 boot runs at ~187 MIPS real.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
+   **Next session starts here** (agreed with the user 2026-09-30): the
+   emulation is good enough that IRIX 5.3/6.5 desktops are the test bed;
+   today ~170-210 MIPS real, `--mips` sets the emulated speed.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.
