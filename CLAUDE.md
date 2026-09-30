@@ -379,10 +379,8 @@ R4400:
    AltGr+2. Writing it ourselves does not work: `rtc_fix_checksum` only
    matches NVRAMs with an empty keybd (IRIX's checksum with keybd=ES is 43,
    the formula gives 6; the real algorithm is still unknown). The window's
-   `roms
-vram\indy.nvram` now has keybd=ES (written by IRIX; the user's
-   keyboard is Spanish); `roms
-vram\indy-us.nvram` is the US copy to use
+   `roms\nvram\indy.nvram` now has keybd=ES (written by IRIX; the user's
+   keyboard is Spanish); `roms\nvram\indy-us.nvram` is the US copy to use
    with indy_boot, whose --keys typing assumes a US layout. Without keybd,
    AltGr (Windows: fake LCtrl + RAlt) reached IRIX as Ctrl+Alt and xwsh
    printed `^[[NNNq`; indy_win32.c now drops the fake LCtrl (same message
