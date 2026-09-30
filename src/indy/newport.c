@@ -909,7 +909,10 @@ static uint32_t expand(const Newport *n, uint32_t pix, uint32_t mode)
             return ((r * 255 / 7) << 16) | ((g * 255 / 7) << 8) | (b * 85);
         }
         return n->cmap[((msb << 8) | (pix & 0xFF)) & 0x1FFF];
-    case 2:  return n->cmap[pix & 0xFFF];
+    case 2:
+        if ((mode >> 8) & 3)                                     /* RGB 4:4:4 (GL a doppio buffer, XL24) */
+            return (pix & 15) * 17 << 16 | ((pix >> 4) & 15) * 17 << 8 | ((pix >> 8) & 15) * 17;
+        return n->cmap[pix & 0xFFF];
     default: {
         uint32_t r = pix & 0xFF, g = (pix >> 8) & 0xFF, b = (pix >> 16) & 0xFF;
         return (r << 16) | (g << 8) | b;
