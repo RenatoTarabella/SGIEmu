@@ -4,6 +4,9 @@
  *   indy [--prom FILE] [--disk IMG] [--disk2 IMG] [--cdrom ISO] [--ram MB]
  *        [--nvram FILE] [--gfx 8|24] [--mips N] [--nojit]
  *
+ * Senza argomenti apre il dialogo di avvio con le ultime impostazioni
+ * (indy.ini accanto all'eseguibile); con argomenti parte subito.
+ *
  * La CPU gira con il JIT (--nojit: solo interprete, per confronto).
  * --mips N e' la velocita' della CPU emulata (100 = un'Indy a 100 MHz).
  *
@@ -19,7 +22,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <commdlg.h>
 #include "indy/indy.h"
+#include "indy_res.h"
+
+/* controlli con lo stile di Windows (Common Controls 6) nel dialogo di avvio */
+#pragma comment(linker, "\"/manifestdependency:type='win32' name='Microsoft.Windows.Common-Controls' " \
+                        "version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 #define FRAME_HZ 60
 
@@ -245,37 +254,233 @@ static void fail(const char *msg)
     exit(1);
 }
 
+/* ---- impostazioni e dialogo di avvio ---- */
+
+typedef struct Settings {
+    char     prom[MAX_PATH], nvram[MAX_PATH], disk[2][MAX_PATH], cdrom[MAX_PATH];
+    unsigned ram_mb, mips;
+    int      gfx, jit;
+} Settings;
+
+static const unsigned ram_choices[] = { 16, 32, 64, 128, 256 };
+static const unsigned mips_choices[] = { 100, 150, 200, 300, 400, 500, 800 };
+
+static void exe_dir_file(const char *name, char *buf, size_t size)
+{
+    char exe[MAX_PATH];
+    DWORD len = GetModuleFileNameA(NULL, exe, MAX_PATH);
+    char *slash = len ? strrchr(exe, '\\') : NULL;
+    if (slash) slash[1] = 0; else exe[0] = 0;
+    snprintf(buf, size, "%s%s", exe, name);
+}
+
+static void full_path(char *path)
+{
+    char buf[MAX_PATH];
+    if (path[0] && GetFullPathNameA(path, MAX_PATH, buf, NULL)) strcpy(path, buf);
+}
+
+/* NVRAM di default: roms\nvram\indy.nvram accanto alla PROM */
+static void default_nvram(const char *prom, char *buf, size_t size)
+{
+    snprintf(buf, size, "%s", prom);
+    char *slash = strrchr(buf, '\\');
+    size_t off = slash ? (size_t)(slash + 1 - buf) : 0;
+    snprintf(buf + off, size - off, "nvram\\indy.nvram");
+}
+
+static void settings_defaults(Settings *st)
+{
+    static const char *p[] = { "roms\\ip24prom.bin", "..\\roms\\ip24prom.bin", "..\\..\\roms\\ip24prom.bin" };
+    static const char *d[] = { "disks\\irix53.img", "..\\disks\\irix53.img", "..\\..\\disks\\irix53.img" };
+    memset(st, 0, sizeof *st);
+    if (!find_file(p, 3, st->prom, sizeof st->prom)) st->prom[0] = 0;
+    if (!find_file(d, 3, st->disk[0], sizeof st->disk[0])) st->disk[0][0] = 0;
+    full_path(st->prom);
+    full_path(st->disk[0]);
+    st->ram_mb = 64; st->mips = 100; st->gfx = 8; st->jit = 1;
+}
+
+static void settings_load(Settings *st)
+{
+    char ini[MAX_PATH];
+    exe_dir_file("indy.ini", ini, sizeof ini);
+    if (GetFileAttributesA(ini) == INVALID_FILE_ATTRIBUTES) return;   /* prima volta: i default */
+    GetPrivateProfileStringA("Indy", "prom", st->prom, st->prom, MAX_PATH, ini);
+    GetPrivateProfileStringA("Indy", "nvram", "", st->nvram, MAX_PATH, ini);
+    GetPrivateProfileStringA("Indy", "disk1", "", st->disk[0], MAX_PATH, ini);
+    GetPrivateProfileStringA("Indy", "disk2", "", st->disk[1], MAX_PATH, ini);
+    GetPrivateProfileStringA("Indy", "cdrom", "", st->cdrom, MAX_PATH, ini);
+    st->ram_mb = GetPrivateProfileIntA("Indy", "ram", (INT)st->ram_mb, ini);
+    st->mips = GetPrivateProfileIntA("Indy", "mips", (INT)st->mips, ini);
+    st->gfx = GetPrivateProfileIntA("Indy", "gfx", st->gfx, ini);
+    st->jit = GetPrivateProfileIntA("Indy", "jit", st->jit, ini);
+}
+
+static void settings_save(const Settings *st)
+{
+    char ini[MAX_PATH], v[32];
+    exe_dir_file("indy.ini", ini, sizeof ini);
+    WritePrivateProfileStringA("Indy", "prom", st->prom, ini);
+    WritePrivateProfileStringA("Indy", "nvram", st->nvram, ini);
+    WritePrivateProfileStringA("Indy", "disk1", st->disk[0], ini);
+    WritePrivateProfileStringA("Indy", "disk2", st->disk[1], ini);
+    WritePrivateProfileStringA("Indy", "cdrom", st->cdrom, ini);
+    snprintf(v, sizeof v, "%u", st->ram_mb); WritePrivateProfileStringA("Indy", "ram", v, ini);
+    snprintf(v, sizeof v, "%u", st->mips);   WritePrivateProfileStringA("Indy", "mips", v, ini);
+    snprintf(v, sizeof v, "%d", st->gfx);    WritePrivateProfileStringA("Indy", "gfx", v, ini);
+    snprintf(v, sizeof v, "%d", st->jit);    WritePrivateProfileStringA("Indy", "jit", v, ini);
+}
+
+static void browse(HWND dlg, int edit, const char *filter)
+{
+    char file[MAX_PATH], dir[MAX_PATH] = "";
+    GetDlgItemTextA(dlg, edit, file, MAX_PATH);
+    if (file[0]) {                                   /* parte dalla cartella del file attuale */
+        strcpy(dir, file);
+        char *slash = strrchr(dir, '\\');
+        if (slash) *slash = 0;
+        const char *name = slash ? strrchr(file, '\\') + 1 : file;
+        memmove(file, name, strlen(name) + 1);
+    }
+    OPENFILENAMEA ofn;
+    memset(&ofn, 0, sizeof ofn);
+    ofn.lStructSize = sizeof ofn;
+    ofn.hwndOwner = dlg;
+    ofn.lpstrFilter = filter;
+    ofn.lpstrFile = file;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrInitialDir = dir[0] ? dir : NULL;
+    ofn.Flags = OFN_FILEMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR;
+    if (GetOpenFileNameA(&ofn)) SetDlgItemTextA(dlg, edit, file);
+}
+
+static int file_ok(HWND dlg, const char *path, const char *what, int required)
+{
+    if (!path[0] && !required) return 1;
+    if (path[0] && GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) return 1;
+    char msg[MAX_PATH + 64];
+    snprintf(msg, sizeof msg, path[0] ? "%s: file not found\n%s" : "%s: no file given%s", what, path);
+    MessageBoxA(dlg, msg, "Indy", MB_ICONWARNING);
+    return 0;
+}
+
+static INT_PTR CALLBACK setup_proc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    static Settings *st;
+    static const char *const f_rom = "PROM (*.bin)\0*.bin\0All files\0*.*\0";
+    static const char *const f_nv = "NVRAM (*.nvram)\0*.nvram;rtc\0All files\0*.*\0";
+    static const char *const f_disk = "Disk images (*.img, *.raw)\0*.img;*.raw\0All files\0*.*\0";
+    static const char *const f_cd = "CD images (*.iso)\0*.iso\0All files\0*.*\0";
+    char buf[64];
+    switch (msg) {
+    case WM_INITDIALOG: {
+        st = (Settings *)lp;
+        HICON icon = LoadIconA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDI_INDY));
+        SendMessageA(dlg, WM_SETICON, ICON_BIG, (LPARAM)icon);
+        SendMessageA(dlg, WM_SETICON, ICON_SMALL, (LPARAM)icon);
+        char nv[MAX_PATH];
+        if (st->nvram[0]) strcpy(nv, st->nvram); else default_nvram(st->prom, nv, sizeof nv);
+        SetDlgItemTextA(dlg, IDC_PROM, st->prom);
+        SetDlgItemTextA(dlg, IDC_NVRAM, nv);
+        SetDlgItemTextA(dlg, IDC_DISK1, st->disk[0]);
+        SetDlgItemTextA(dlg, IDC_DISK2, st->disk[1]);
+        SetDlgItemTextA(dlg, IDC_CDROM, st->cdrom);
+        int sel = 2;
+        for (int i = 0; i < 5; i++) {
+            snprintf(buf, sizeof buf, "%u MB", ram_choices[i]);
+            SendDlgItemMessageA(dlg, IDC_RAM, CB_ADDSTRING, 0, (LPARAM)buf);
+            if (ram_choices[i] == st->ram_mb) sel = i;
+        }
+        SendDlgItemMessageA(dlg, IDC_RAM, CB_SETCURSEL, (WPARAM)sel, 0);
+        SendDlgItemMessageA(dlg, IDC_GFX, CB_ADDSTRING, 0, (LPARAM)"XL8 (8 bit)");
+        SendDlgItemMessageA(dlg, IDC_GFX, CB_ADDSTRING, 0, (LPARAM)"XL24 (24 bit)");
+        SendDlgItemMessageA(dlg, IDC_GFX, CB_SETCURSEL, st->gfx == 24 ? 1 : 0, 0);
+        for (int i = 0; i < 7; i++) {
+            snprintf(buf, sizeof buf, "%u", mips_choices[i]);
+            SendDlgItemMessageA(dlg, IDC_MIPS, CB_ADDSTRING, 0, (LPARAM)buf);
+        }
+        snprintf(buf, sizeof buf, "%u", st->mips);
+        SetDlgItemTextA(dlg, IDC_MIPS, buf);
+        CheckDlgButton(dlg, IDC_JIT, st->jit ? BST_CHECKED : BST_UNCHECKED);
+        return TRUE;
+    }
+    case WM_COMMAND:
+        switch (LOWORD(wp)) {
+        case IDC_PROM_B:  browse(dlg, IDC_PROM, f_rom); return TRUE;
+        case IDC_NVRAM_B: browse(dlg, IDC_NVRAM, f_nv); return TRUE;
+        case IDC_DISK1_B: browse(dlg, IDC_DISK1, f_disk); return TRUE;
+        case IDC_DISK2_B: browse(dlg, IDC_DISK2, f_disk); return TRUE;
+        case IDC_CDROM_B: browse(dlg, IDC_CDROM, f_cd); return TRUE;
+        case IDOK: {
+            Settings n = *st;
+            GetDlgItemTextA(dlg, IDC_PROM, n.prom, MAX_PATH);
+            GetDlgItemTextA(dlg, IDC_NVRAM, n.nvram, MAX_PATH);
+            GetDlgItemTextA(dlg, IDC_DISK1, n.disk[0], MAX_PATH);
+            GetDlgItemTextA(dlg, IDC_DISK2, n.disk[1], MAX_PATH);
+            GetDlgItemTextA(dlg, IDC_CDROM, n.cdrom, MAX_PATH);
+            LRESULT ri = SendDlgItemMessageA(dlg, IDC_RAM, CB_GETCURSEL, 0, 0);
+            n.ram_mb = ram_choices[ri >= 0 && ri < 5 ? ri : 2];
+            n.gfx = SendDlgItemMessageA(dlg, IDC_GFX, CB_GETCURSEL, 0, 0) == 1 ? 24 : 8;
+            GetDlgItemTextA(dlg, IDC_MIPS, buf, sizeof buf);
+            n.mips = (unsigned)atoi(buf);
+            n.jit = IsDlgButtonChecked(dlg, IDC_JIT) == BST_CHECKED;
+            if (n.mips < 10 || n.mips > 5000) {
+                MessageBoxA(dlg, "Speed: 10 to 5000 MIPS", "Indy", MB_ICONWARNING);
+                return TRUE;
+            }
+            if (!file_ok(dlg, n.prom, "PROM", 1) || !file_ok(dlg, n.disk[0], "Disk SCSI 1", 0) ||
+                !file_ok(dlg, n.disk[1], "Disk SCSI 2", 0) || !file_ok(dlg, n.cdrom, "CD-ROM", 0))
+                return TRUE;
+            /* la NVRAM puo' non esistere ancora: si crea all'uscita */
+            char def[MAX_PATH];
+            default_nvram(n.prom, def, sizeof def);
+            if (!strcmp(n.nvram, def)) n.nvram[0] = 0;    /* segue la PROM */
+            *st = n;
+            EndDialog(dlg, 1);
+            return TRUE;
+        }
+        case IDCANCEL:
+            EndDialog(dlg, 0);
+            return TRUE;
+        }
+        break;
+    }
+    return FALSE;
+}
+
 int main(int argc, char **argv)
 {
-    const char *prom_path = NULL, *disk_path[2] = { NULL, NULL }, *cdrom_path = NULL, *nvram_arg = NULL;
-    unsigned ram_mb = 64, mips = 100;
-    int jit = 1;
-    int gfx = 8;
-    for (int i = 1; i < argc; i++) {
-        const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
-        if (!strcmp(a, "--prom") && v) { prom_path = v; i++; }
-        else if (!strcmp(a, "--disk") && v) { disk_path[0] = v; i++; }
-        else if (!strcmp(a, "--disk2") && v) { disk_path[1] = v; i++; }
-        else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; i++; }
-        else if (!strcmp(a, "--ram") && v) { ram_mb = (unsigned)atoi(v); i++; }
-        else if (!strcmp(a, "--nvram") && v) { nvram_arg = v; i++; }
-        else if (!strcmp(a, "--gfx") && v) { gfx = atoi(v); i++; }
-        else if (!strcmp(a, "--mips") && v) { mips = (unsigned)atoi(v); i++; }   /* CPU emulata piu' veloce */
-        else if (!strcmp(a, "--nojit")) jit = 0;
+    static Settings st;
+    settings_defaults(&st);
+    if (argc > 1) {                                   /* riga di comando: niente dialogo */
+        for (int i = 1; i < argc; i++) {
+            const char *a = argv[i], *v = i + 1 < argc ? argv[i + 1] : NULL;
+            if (!strcmp(a, "--prom") && v) { snprintf(st.prom, MAX_PATH, "%s", v); i++; }
+            else if (!strcmp(a, "--disk") && v) { snprintf(st.disk[0], MAX_PATH, "%s", v); i++; }
+            else if (!strcmp(a, "--disk2") && v) { snprintf(st.disk[1], MAX_PATH, "%s", v); i++; }
+            else if (!strcmp(a, "--cdrom") && v) { snprintf(st.cdrom, MAX_PATH, "%s", v); i++; }
+            else if (!strcmp(a, "--ram") && v) { st.ram_mb = (unsigned)atoi(v); i++; }
+            else if (!strcmp(a, "--nvram") && v) { snprintf(st.nvram, MAX_PATH, "%s", v); i++; }
+            else if (!strcmp(a, "--gfx") && v) { st.gfx = atoi(v); i++; }
+            else if (!strcmp(a, "--mips") && v) { st.mips = (unsigned)atoi(v); i++; }   /* CPU emulata piu' veloce */
+            else if (!strcmp(a, "--nojit")) st.jit = 0;
+        }
+    } else {                                          /* dialogo con le ultime impostazioni */
+        settings_load(&st);
+        if (DialogBoxParamA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(IDD_SETUP), NULL, setup_proc, (LPARAM)&st) != 1)
+            return 0;
+        settings_save(&st);
     }
     /* la console seriale va nel terminale che ha lanciato il programma */
     if (AttachConsole(ATTACH_PARENT_PROCESS)) { freopen("CONOUT$", "w", stdout); printf("\n"); }
 
-    static char prom_buf[MAX_PATH], disk_buf[MAX_PATH];
-    if (!prom_path) {
-        static const char *p[] = { "roms\\ip24prom.bin", "..\\roms\\ip24prom.bin", "..\\..\\roms\\ip24prom.bin" };
-        prom_path = find_file(p, 3, prom_buf, sizeof prom_buf);
-        if (!prom_path) fail("PROM non trovata: usa --prom percorso\\ip24prom.bin");
-    }
-    if (!disk_path[0]) {
-        static const char *d[] = { "disks\\irix53.img", "..\\disks\\irix53.img", "..\\..\\disks\\irix53.img" };
-        disk_path[0] = find_file(d, 3, disk_buf, sizeof disk_buf);
-    }
+    if (!st.prom[0]) fail("PROM non trovata: usa --prom percorso\\ip24prom.bin");
+    const char *prom_path = st.prom, *cdrom_path = st.cdrom[0] ? st.cdrom : NULL;
+    const char *disk_path[2] = { st.disk[0][0] ? st.disk[0] : NULL, st.disk[1][0] ? st.disk[1] : NULL };
+    const char *nvram_arg = st.nvram[0] ? st.nvram : NULL;
+    unsigned ram_mb = st.ram_mb, mips = st.mips;
+    int jit = st.jit, gfx = st.gfx;
 
     long prom_size;
     uint8_t *prom = load_file(prom_path, &prom_size);
@@ -289,10 +494,7 @@ int main(int argc, char **argv)
     /* NVRAM: la nostra accanto alla PROM, la prima volta quella di MAME */
     if (nvram_arg) snprintf(app.nvram_path, sizeof app.nvram_path, "%s", nvram_arg);
     else {
-        snprintf(app.nvram_path, sizeof app.nvram_path, "%s", prom_path);
-        char *slash = strrchr(app.nvram_path, '\\');
-        snprintf(slash ? slash + 1 : app.nvram_path, sizeof app.nvram_path - (slash ? (size_t)(slash + 1 - app.nvram_path) : 0),
-                 "nvram\\indy.nvram");
+        default_nvram(prom_path, app.nvram_path, sizeof app.nvram_path);
     }
     long nv_size = 0;
     uint8_t *nv = load_file(app.nvram_path, &nv_size);
@@ -326,6 +528,7 @@ int main(int argc, char **argv)
     wc.lpfnWndProc = wndproc;
     wc.hInstance = inst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.hIcon = LoadIconA(inst, MAKEINTRESOURCEA(IDI_INDY));
     wc.lpszClassName = "IndyWindow";
     RegisterClassA(&wc);
     app.hwnd = CreateWindowA(wc.lpszClassName, "Indy", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,

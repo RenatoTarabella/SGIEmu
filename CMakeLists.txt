@@ -70,8 +70,8 @@ target_link_libraries(mipsdis r4kcore)
 
 # L'Indy in una finestra Win32
 if(WIN32)
-    add_executable(indy WIN32 src/frontend/indy_win32.c)
-    target_link_libraries(indy indycore winmm)
+    add_executable(indy WIN32 src/frontend/indy_win32.c res/indy.rc)
+    target_link_libraries(indy indycore winmm comdlg32)
     if(MSVC)
         set_target_properties(indy PROPERTIES LINK_FLAGS "/ENTRY:mainCRTStartup")
     endif()

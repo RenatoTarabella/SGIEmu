@@ -1,0 +1,50 @@
+// indy.rc - Icona e dialogo di avvio di indy.exe (testi in inglese)
+
+#pragma code_page(65001)
+#include <windows.h>
+#include "../src/frontend/indy_res.h"
+
+IDI_INDY ICON "indy.ico"
+
+IDD_SETUP DIALOGEX 0, 0, 330, 196
+STYLE DS_MODALFRAME | DS_CENTER | DS_SETFONT | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Indy (IP24) - start"
+FONT 9, "Segoe UI"
+BEGIN
+    LTEXT           "PROM:", -1, 8, 10, 60, 10
+    EDITTEXT        IDC_PROM, 72, 8, 226, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_PROM_B, 302, 8, 20, 13
+
+    LTEXT           "NVRAM:", -1, 8, 28, 60, 10
+    EDITTEXT        IDC_NVRAM, 72, 26, 226, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_NVRAM_B, 302, 26, 20, 13
+
+    LTEXT           "Disk (SCSI 1):", -1, 8, 46, 62, 10
+    EDITTEXT        IDC_DISK1, 72, 44, 226, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_DISK1_B, 302, 44, 20, 13
+
+    LTEXT           "Disk (SCSI 2):", -1, 8, 64, 62, 10
+    EDITTEXT        IDC_DISK2, 72, 62, 226, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_DISK2_B, 302, 62, 20, 13
+
+    LTEXT           "CD-ROM (SCSI 4):", -1, 8, 82, 62, 10
+    EDITTEXT        IDC_CDROM, 72, 80, 226, 13, ES_AUTOHSCROLL
+    PUSHBUTTON      "...", IDC_CDROM_B, 302, 80, 20, 13
+
+    LTEXT           "Empty field = no drive. IRIX writes to the disk images.", -1, 72, 96, 250, 10
+
+    LTEXT           "Memory:", -1, 8, 116, 60, 10
+    COMBOBOX        IDC_RAM, 72, 114, 70, 120, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Graphics:", -1, 160, 116, 40, 10
+    COMBOBOX        IDC_GFX, 202, 114, 120, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+
+    LTEXT           "Speed (MIPS):", -1, 8, 136, 62, 10
+    COMBOBOX        IDC_MIPS, 72, 134, 70, 120, CBS_DROPDOWN | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "100 = a real 100 MHz Indy", -1, 148, 136, 150, 10
+
+    AUTOCHECKBOX    "JIT (translates MIPS code to x86-64: much faster)", IDC_JIT, 72, 154, 250, 12
+
+    DEFPUSHBUTTON   "Start", IDOK, 212, 174, 52, 15
+    PUSHBUTTON      "Cancel", IDCANCEL, 270, 174, 52, 15
+END

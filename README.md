@@ -51,7 +51,11 @@ build\Release\indy.exe [--prom roms\ip24prom.bin] [--disk disks\irix53.img] [--c
                        [--mips N] [--nojit]
 ```
 
-Without arguments it looks for `roms\ip24prom.bin` and `disks\irix53.img`.
+Without arguments a start dialog asks for the PROM, NVRAM, disks, CD-ROM,
+memory, graphics board (XL8/XL24), CPU speed and JIT, remembering the last
+choices in `indy.ini` next to the executable (the first time it looks for
+`roms\ip24prom.bin` and `disks\irix53.img`). With arguments it starts
+directly.
 Click in the window to capture the mouse, Ctrl+F11 releases it. The keyboard
 is passed through by physical key (PS/2 scan codes): choose the layout in
 IRIX. The serial console is printed in the terminal that started the program.

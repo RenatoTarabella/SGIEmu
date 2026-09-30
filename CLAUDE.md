@@ -37,6 +37,10 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   `scsi_dev` (disk / CD-ROM on an image file, 512-byte blocks) and `newport`
   (graphics). Each chip is standalone (no `Indy` dependency) and tested in
   `tests/test_devices.c`. Coming: Seeq, HAL2.
+- `res/`: the icon (`indy.png` from the user's 3D SGI logo, `indy.ico`
+  made from it with Pillow, 16-256 px) and `indy.rc` (icon + start dialog,
+  English texts, UTF-8). `indy.exe` without arguments shows the dialog and
+  keeps the last settings in `indy.ini` next to the exe.
 - `src/frontend/indy_win32.c` the window (`indy.exe`): one loop that runs a
   frame of emulated time, redraws only when the Newport changed (`gen`),
   sleeps to stay at real time. `png.c` comes from ArchieEmu.
@@ -522,4 +526,18 @@ R4400:
    (fast-forward when IRIX idles) would change timing: ask the user first.
    Open glitch seen by the user in the window (with and without JIT): black
    areas in context menus while moving up and down the entries.
-7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.
+7. **Next (agreed with the user 2026-09-30): Indigo2.** It shares MC and
+   HPC3 with the Indy; differences are the board (IP22 R4400; IP26 R8000
+   and IP28 R10000 are MIPS IV), front panel, EISA, and the graphics
+   (Extreme/XL/Impact). Then ethernet, audio (HAL2).
+   CPU notes from the same discussion: an R5000 Indy (same IP24 board and
+   PROM, MAME `indy_5015`) would give MIPS IV (nekoware and `-mips4`
+   software under 6.5): MOVN/MOVZ, MOVF/MOVT, PREF, COP1X (indexed FPU
+   loads/stores, MADD/MSUB/NMADD/NMSUB, RECIP/RSQRT), 8 FPU condition codes,
+   Status.XX, the R5000 CP0 (PRId, Config, 32+32 KB caches, secondary cache
+   ops, no VCE). Emulating a "bigger" CPU is not slower (only the ISA and
+   CP0 are emulated); the CPU type would go into the JIT block key and the
+   native C.cond must fall back for cc != 0. R10000 64-bit kernels run from
+   xkphys: extend the JIT's unmapped-region chaining (today kseg0/kseg1).
+   IRIX's idle loop special-cases the R4600 (PRId 0x20), probably for
+   `wait`: check whether R5000 uses it (would allow idle skipping).
