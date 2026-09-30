@@ -384,6 +384,13 @@ R4400:
    on the desktop. With `--ram 128` it reaches the graphical login in
    ~200 s emulated, the desktop as root, and a login on the serial
    console ("IRIS console login", answer the TERM prompt first);
-   `shutdown -y -g0` is clean. Not yet explored: apps, GL demos under 6.5.
+   `shutdown -y -g0` is clean. The 5.3 demos were copied into 6.5's
+   `/usr/demos` (the demos user's home): boot 6.5 with the 5.3 disk as
+   second disk (`--disk irix65.img --disk irix53.img`, SCSI ID 2), then
+   `fsck -y /dev/rdsk/dks0d2s0`, `mount -r -t efs /dev/dsk/dks0d2s0 /mnt53`,
+   tar copy. buttonfly and ideas run on 6.5. In `--keys`, `{KBD}` / `{SER}`
+   switch between PS/2 keyboard and serial mid-session (graphical login,
+   then commands and shutdown on the serial console). With `--mips 200`
+   the 6.5 boot runs at ~187 MIPS real.
 6. Speed: pre-decoded interpreter per physical page, then JIT with lockstep.
 7. Later: Indigo2, ethernet, audio (HAL2), maybe IMPACT.

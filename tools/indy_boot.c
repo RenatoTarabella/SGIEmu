@@ -303,6 +303,8 @@ int main(int argc, char **argv)
                 kp = strchr(kp, '}') + 1;
                 next_key += 30 * per_ms;
             }
+            else if (!strncmp(kp, "{KBD}", 5)) { kbd_mode = 1; kp += 5; }   /* da qui tastiera PS/2 */
+            else if (!strncmp(kp, "{SER}", 5)) { kbd_mode = 0; kp += 5; }   /* da qui seriale */
             else if (!strncmp(kp, "{REG}", 5)) {                /* dove e' la CPU adesso */
                 fprintf(stderr, "[t=%.3f pc=%llX ra=%llX a0=%llX a1=%llX a2=%llX sp=%llX Status=%llX]\n",
                         M.cpu.icount / (double)per_ms / 1000, (unsigned long long)M.cpu.pc,
