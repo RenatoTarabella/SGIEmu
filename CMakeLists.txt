@@ -3,6 +3,8 @@ project(SGI C)
 
 set(CMAKE_C_STANDARD 99)
 set(CMAKE_C_STANDARD_REQUIRED ON)
+# runtime C statico: gli exe girano anche senza il redistributable di VC++
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 if(MSVC)
     add_compile_options(/W4 /wd4100 /D_CRT_SECURE_NO_WARNINGS /utf-8 /Zi)
