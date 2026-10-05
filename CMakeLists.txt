@@ -68,6 +68,9 @@ endif()
 add_executable(mipsdis tools/mipsdis.c)
 target_link_libraries(mipsdis r4kcore)
 
+# Immagine di disco vuota
+add_executable(mkdisk tools/mkdisk.c)
+
 # L'Indy in una finestra Win32
 if(WIN32)
     add_executable(indy WIN32 src/frontend/indy_win32.c res/indy.rc)

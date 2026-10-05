@@ -61,7 +61,7 @@ static void update_title(void)
 {
     char t[256];
     snprintf(t, sizeof t, "Indy (IP24)   %.0f MIPS   %s", app.mips,
-             app.captured ? "[mouse catturato: Ctrl+F11 per liberarlo]" : "[clic nella finestra per catturare il mouse]");
+             app.captured ? "[mouse captured: Ctrl+F11 releases it]" : "[click in the window to capture the mouse]");
     if (strcmp(t, app.title)) {
         strcpy(app.title, t);
         SetWindowTextA(app.hwnd, t);
@@ -475,7 +475,7 @@ int main(int argc, char **argv)
     /* la console seriale va nel terminale che ha lanciato il programma */
     if (AttachConsole(ATTACH_PARENT_PROCESS)) { freopen("CONOUT$", "w", stdout); printf("\n"); }
 
-    if (!st.prom[0]) fail("PROM non trovata: usa --prom percorso\\ip24prom.bin");
+    if (!st.prom[0]) fail("PROM not found: use --prom path\\ip24prom.bin");
     const char *prom_path = st.prom, *cdrom_path = st.cdrom[0] ? st.cdrom : NULL;
     const char *disk_path[2] = { st.disk[0][0] ? st.disk[0] : NULL, st.disk[1][0] ? st.disk[1] : NULL };
     const char *nvram_arg = st.nvram[0] ? st.nvram : NULL;
@@ -484,10 +484,10 @@ int main(int argc, char **argv)
 
     long prom_size;
     uint8_t *prom = load_file(prom_path, &prom_size);
-    if (!prom) fail("Non riesco a leggere la PROM");
-    if (indy_init(&app.m, prom, (uint32_t)prom_size, ram_mb, gfx)) fail("Memoria insufficiente");
+    if (!prom) fail("Cannot read the PROM");
+    if (indy_init(&app.m, prom, (uint32_t)prom_size, ram_mb, gfx)) fail("Out of memory");
     if (mips >= 10 && mips <= 5000) app.m.ps_per_insn = 1000000u / mips;
-    if (jit && r4k_jit_init(&app.m.cpu, 0)) fail("Memoria insufficiente per il JIT");
+    if (jit && r4k_jit_init(&app.m.cpu, 0)) fail("Out of memory for the JIT");
     free(prom);
     app.m.scc.tx = on_tx;
 
@@ -517,10 +517,10 @@ int main(int argc, char **argv)
     for (int k = 0; k < 2; k++)
         if (disk_path[k] && indy_attach_scsi(&app.m, 1 + k, SCSI_DISK, disk_path[k], 0)) {
             char msg[MAX_PATH + 64];
-            snprintf(msg, sizeof msg, "Non riesco ad aprire il disco:\n%s", disk_path[k]);
+            snprintf(msg, sizeof msg, "Cannot open the disk image:\n%s", disk_path[k]);
             fail(msg);
         }
-    if (cdrom_path && indy_attach_scsi(&app.m, 4, SCSI_CDROM, cdrom_path, 1)) fail("Non riesco ad aprire il CD-ROM");
+    if (cdrom_path && indy_attach_scsi(&app.m, 4, SCSI_CDROM, cdrom_path, 1)) fail("Cannot open the CD-ROM image");
 
     HINSTANCE inst = GetModuleHandleA(NULL);
     WNDCLASSA wc;
@@ -576,7 +576,11 @@ int main(int argc, char **argv)
     timeEndPeriod(1);
     capture_mouse(0);
 
-    FILE *f = fopen(app.nvram_path, "wb");                        /* NVRAM per la prossima volta */
+    char nvdir[MAX_PATH];                                         /* NVRAM per la prossima volta */
+    snprintf(nvdir, sizeof nvdir, "%s", app.nvram_path);
+    char *nvslash = strrchr(nvdir, '\\');
+    if (nvslash) { *nvslash = 0; CreateDirectoryA(nvdir, NULL); }   /* la prima volta non c'e' */
+    FILE *f = fopen(app.nvram_path, "wb");
     if (f) { fwrite(app.m.rtc.ram, 1, DS1386_SIZE, f); fclose(f); }
     indy_free(&app.m);
     return 0;

@@ -16,6 +16,7 @@
 #define BLK 512u
 #define HEADS 16u
 #define SECTORS 63u
+#define RAW_SECTOR 2352u   /* 16 byte di intestazione, 2048 di dati, 288 di EDC/ECC */
 
 static void put32(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 24); p[1] = (uint8_t)(v >> 16); p[2] = (uint8_t)(v >> 8); p[3] = (uint8_t)v; }
 static void put16(uint8_t *p, uint32_t v) { p[0] = (uint8_t)(v >> 8); p[1] = (uint8_t)v; }
@@ -39,7 +40,17 @@ int scsi_dev_open(ScsiDev *d, int type, const char *path, int readonly)
     d->f = fopen(path, d->readonly || d->snapshot ? "rb" : "r+b");
     if (!d->f) return -1;
     fseek64(d->f, 0, SEEK_END);
-    d->blocks = (uint64_t)ftell64(d->f) / BLK;
+    uint64_t size = (uint64_t)ftell64(d->f);
+    d->blocks = size / BLK;
+    if (type == SCSI_CDROM && size % RAW_SECTOR == 0) {          /* sync 00 FF x10 00, modo 1 */
+        uint8_t h[16];
+        fseek64(d->f, 0, SEEK_SET);
+        if (fread(h, 1, 16, d->f) == 16 && h[0] == 0 && h[11] == 0 && h[15] == 1) {
+            int sync = 1;
+            for (int k = 1; k < 11; k++) sync &= h[k] == 0xFF;
+            if (sync) { d->raw = 1; d->blocks = size / RAW_SECTOR * 4; }
+        }
+    }
     if (type == SCSI_CDROM) {
         pad(d->vendor, "TOSHIBA", 8); pad(d->product, "CD-ROM XM-3401TA", 16); pad(d->revision, "0283", 4);
     } else {
@@ -246,8 +257,17 @@ int scsi_dev_exec(ScsiDev *d, const uint8_t *c, uint8_t *buf, uint32_t *len)
     case 0x08: case 0x28: case 0xA8:                      /* READ */
         rw_args(c, &lba, &n);
         if (lba + n > d->blocks) return check(d, 5, 0x21);
-        fseek64(d->f, (int64_t)(lba * BLK), SEEK_SET);
-        *len = (uint32_t)fread(buf, 1, (size_t)n * BLK, d->f);
+        if (d->raw) {                                     /* 4 blocchi per settore */
+            *len = 0;
+            for (uint32_t k = 0; k < n; k++) {
+                uint64_t b = lba + k;
+                fseek64(d->f, (int64_t)(b / 4 * RAW_SECTOR + 16 + b % 4 * BLK), SEEK_SET);
+                *len += (uint32_t)fread(buf + (size_t)k * BLK, 1, BLK, d->f);
+            }
+        } else {
+            fseek64(d->f, (int64_t)(lba * BLK), SEEK_SET);
+            *len = (uint32_t)fread(buf, 1, (size_t)n * BLK, d->f);
+        }
         if (*len < n * BLK) { memset(buf + *len, 0, n * BLK - *len); *len = n * BLK; }
         for (uint32_t k = 0; d->cow_n && k < n; k++) {
             const uint8_t *p = cow_find(d, lba + k);

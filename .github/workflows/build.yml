@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        run: |
+          build\Release\test_r4k.exe
+          build\Release\test_devices.exe
+        shell: cmd
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $d = "SGIEmu-win64"
+          New-Item -ItemType Directory -Force $d, "$d\roms", "$d\disks", "$d\cdrom" | Out-Null
+          Copy-Item build\Release\indy.exe, build\Release\indy_boot.exe, build\Release\mkdisk.exe, README.md, LICENSE $d
+          Set-Content "$d\roms\PUT_ip24prom.bin_HERE.txt" "Copy your Indy PROM here as ip24prom.bin (not included)."
+          Set-Content "$d\disks\PUT_DISK_IMAGES_HERE.txt" "Raw SCSI disk images (.img) with IRIX installed (not included)."
+          Set-Content "$d\cdrom\PUT_CD_IMAGES_HERE.txt" "IRIX CD images (.iso, 2048-byte sectors), optional."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SGIEmu-win64
+          path: SGIEmu-win64

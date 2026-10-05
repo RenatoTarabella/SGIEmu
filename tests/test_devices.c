@@ -216,6 +216,36 @@ static void test_scsi_disk(void)
     remove(path);
 }
 
+/* CD a settori grezzi MODE1/2352: 3 settori = 12 blocchi da 512, i dati
+   saltano intestazione ed ECC */
+static void test_scsi_raw_cd(void)
+{
+    printf("CD-ROM grezzo 2352\n");
+    const char *path = "test_scsi_raw.bin";
+    FILE *f = fopen(path, "wb");
+    for (int s = 0; s < 3; s++) {
+        uint8_t sec[2352];
+        memset(sec, 0xEE, sizeof sec);                               /* ECC fittizio */
+        memset(sec, 0xFF, 12); sec[0] = sec[11] = 0; sec[15] = 1;
+        for (int k = 0; k < 2048; k++) sec[16 + k] = (uint8_t)(s * 4 + k / 512);
+        fwrite(sec, 1, sizeof sec, f);
+    }
+    fclose(f);
+    static ScsiDev d;
+    static uint8_t buf[3 * 512];
+    CHECK_EQ(scsi_dev_open(&d, SCSI_CDROM, path, 1), 0);
+    CHECK_EQ(d.raw, 1);
+    CHECK_EQ(d.blocks, 12);
+    static const uint8_t cdb[10] = { 0x28, 0, 0, 0, 0, 3, 0, 0, 3, 0 };   /* blocchi 3-5 */
+    uint32_t len = sizeof buf;
+    CHECK_EQ(scsi_dev_exec(&d, cdb, buf, &len), SCSI_GOOD);
+    CHECK_EQ(len, 3 * 512);
+    CHECK_EQ(buf[0], 3); CHECK_EQ(buf[511], 3);
+    CHECK_EQ(buf[512], 4); CHECK_EQ(buf[1535], 5);                   /* attraversa il settore */
+    scsi_dev_close(&d);
+    remove(path);
+}
+
 static void test_kbc(void)
 {
     printf("8042\n");
@@ -270,6 +300,7 @@ int main(void)
     test_scc();
     test_wd();
     test_scsi_disk();
+    test_scsi_raw_cd();
     test_kbc();
     printf("%d controlli, %d falliti\n", checks, failures);
     return failures != 0;

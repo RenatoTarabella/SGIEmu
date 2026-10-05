@@ -23,6 +23,7 @@ typedef struct ScsiDev {
     FILE    *f;
     uint64_t blocks;          /* blocchi da 512 byte */
     int      readonly;
+    int      raw;             /* CD a settori grezzi MODE1/2352 (.bin di chdman) */
     uint8_t  sense_key, asc, ascq;
     char     vendor[9], product[17], revision[5];
     uint64_t reads, writes;   /* statistiche: blocchi */

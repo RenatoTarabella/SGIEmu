@@ -45,13 +45,13 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   frame of emulated time, redraws only when the Newport changed (`gen`),
   sleeps to stay at real time. `png.c` comes from ArchieEmu.
 - `tools/mipsdis.c` disassembles a binary (PROM): `mipsdis FILE BASE FROM COUNT`.
+- `tools/mkdisk.c` creates an empty disk image: `mkdisk FILE MB`.
 - `ref/` (git-ignored) holds the Linux IP22 headers and drivers downloaded as
   documentation; read them, never copy code.
 - `roms/` (PROM) and `cdrom/` (IRIX images) exist only locally and are
   **git-ignored: never commit or redistribute them**.
-- Local material (copied from the user's old MAME setups, which the user
-  deleted on 2026-09-30: MAME was slow and buggy for them; `D:\Mame\SGI`
-  with `irix65.chd` and the ULTRA64 disk is still there):
+- Local material on the development machine (originally from MAME
+  setups; the commands below assume these names):
   - `roms/ip24prom.bin` = `ip24prom.070-9101-011.bin` from MAME's
     `indy_4610.zip` (512 KB); `roms/indy_4610/` also has the keyboard
     `natural.bin` and a PAL dump;
@@ -61,10 +61,10 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
     EFS root) with IRIX 5.3 installed, from `irix53.chd`;
   - `cdrom/irix53.iso`: IRIX 5.3 install CD, converted from the MODE1_RAW
     `sgi_irix_5.3.bin`.
-  Not copied (gone with the old setups): the freeware CD collection CHD
-  and MAME itself. To compare with MAME again (`mame.exe indy_4610
-  -gio64_gfx xl24 ...`, `-debug`), install a fresh MAME; `chdman` extracts
-  CHDs.
+  To compare with MAME (`mame.exe indy_4610
+  -gio64_gfx xl24 ...`, `-debug`), install MAME; `chdman` extracts CHDs
+  (`extracthd` for disks; `extractcd` gives a MODE1/2352 `.bin` that
+  `scsi_dev` reads directly).
 - Source comments and commit messages are in Italian (ASCII: `e'`, `perche'`);
   README and this file are in English.
 
@@ -160,8 +160,7 @@ indy_boot --prom roms\ip24prom.bin --disk disks\irix53.img --ms 235000 --io 0 --
 ```
 
 `disks\irix53.img` is modified by IRIX (logs, autoconfig rebuilt `/unix`);
-no pristine copy is left (the source CHD was deleted with the old MAME
-setup): the only fallback is `disks\irix53-backup.img` (taken just before
+no pristine copy is left: the only fallback is `disks\irix53-backup.img` (taken just before
 the demos install). Back it up before risky experiments.
 The MAME install had only the buttonfly menus (`demos.sw.demos`); on
 2026-09-30 the full demos (games, tools, visualization: flight, atlantis,
@@ -170,8 +169,8 @@ ideas, bz, ...) were installed from `cdrom\irix53.iso` with
 `/CDROM`). Copy from just before: `disks\irix53-backup.img`. End headless
 sessions that write to the disk with `shutdown -y -g0` (halts at the PROM
 "Okay to power off" panel).
-Other disks: `D:\Mame\SGI\ULTRA64_2GIG_SCSI_IRIX53_confirmed2.img` (raw,
-IRIX 5.3 with the N64 kit) and `D:\Mame\SGI\irix65.chd` (IRIX 6.5, XFS).
+Other local disks: a raw IRIX 5.3 image with the N64 development kit
+(ULTRA64) and the IRIX 6.5 CHD (XFS) that `disks/irix65.img` came from.
 
 Categories of the diff: `alu muldiv trap mem branch fpu misc`. Run 100k+
 cases with a couple of seeds after touching the CPU (100k takes ~25 s).
@@ -494,7 +493,7 @@ R4400:
    time as the RAlt that follows).
 5. CD-ROM install from `cdrom/irix53.iso`, IRIX 6.5, ethernet (Seeq), audio.
    CD-ROM: works (automount on /CDROM, `inst` installed the demos).
-   IRIX 6.5: `disks/irix65.img` (2 GB, from `D:/Mame/SGI/irix65.chd` with
+   IRIX 6.5: `disks/irix65.img` (2 GB, from a MAME `irix65.chd` with
    `chdman extracthd`) is "IRIX Release 6.5 IP22" (2003) with Blender 1.0
    on the desktop. With `--ram 128` it reaches the graphical login in
    ~200 s emulated, the desktop as root, and a login on the serial
@@ -545,16 +544,17 @@ R4400:
    xkphys: extend the JIT's unmapped-region chaining (today kseg0/kseg1).
    IRIX's idle loop special-cases the R4600 (PRId 0x20), probably for
    `wait`: check whether R5000 uses it (would allow idle skipping).
-8. **Public GitHub release (later, with calm; agreed 2026-09-30).** The
-   history is clean (no ROM/disk/NVRAM ever committed). To do: a public
-   README with "getting started" (where the PROM goes, how to get IRIX,
-   what works: 5.3/6.5, GL demos, CD-ROM; not yet: network, audio, known
-   glitches); a GitHub Action building the Windows binaries for Releases;
-   a tool to create an empty disk image plus a guide to install IRIX from
-   one's own CD (fx to partition); create the NVRAM on first start (MAC +
-   checksum, as indy_boot does) instead of needing MAME's; recompress the
-   3.9 MB screenshots in docs/; generalize the local `D:\` paths in
-   CLAUDE.md. The icon is the user's 3D render of the SGI cube, a
-   trademark (now HPE): add a "not affiliated, trademarks of their owners"
-   note or use a different icon. PROM, IRIX, demos, nekoware and MAME's
-   NVRAM must never be distributed.
+8. **Public GitHub release — done 2026-10-05** as
+   `github.com/RenatoTarabella/SGIEmu` (IndyEmu was taken by another Indy
+   emulator), for an SGI users' group on Facebook. Public README with
+   getting started and a trademark disclaimer (the icon stays: the user's
+   3D render of the SGI cube); `.github/workflows/build.yml` builds and
+   tests on every push; release zips are built locally and uploaded with
+   `gh release` (as for ArchieEmu): `indy.exe`, `indy_boot.exe`,
+   `mkdisk.exe`, README, LICENSE, empty `roms\ disks\ cdrom\`. Without an
+   NVRAM file the PROM reinitialises the environment ("NVRAM checksum is
+   incorrect") and autoboots to the graphical login: MAME's NVRAM is not
+   needed (the window adds the MAC and creates `roms\nvram\`). `mkdisk`
+   makes an empty (sparse) disk that IRIX sees; installing IRIX from CD
+   onto it (fx, miniroot) is still untested. PROM, IRIX, demos, nekoware
+   and MAME's NVRAM must never be distributed.
