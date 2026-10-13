@@ -113,7 +113,8 @@ int main(int argc, char **argv)
     const char *prom_path = NULL, *keys = "";
     unsigned ram_mb = 256, mips = 0;
     uint64_t ms = 5000, trace_at = 0, trace_from = 0, dis_addr = 0;
-    int dis_count = 48, jit = 0, heart = 0, ioc3 = 0;
+    int dis_count = 48, jit = 0, heart = 0, ioc3 = 0, scsi = 0, ndisk = 0;
+    const char *disk_path[4] = { 0 }, *cdrom_path = NULL;
     long trace = 0;
     for (int k = 1; k < argc; k++) {
         const char *a = argv[k], *v = k + 1 < argc ? argv[k + 1] : NULL;
@@ -137,6 +138,9 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--jit")) jit = 1;
         else if (!strcmp(a, "--heart")) heart = 1;
         else if (!strcmp(a, "--ioc3")) ioc3 = 1;
+        else if (!strcmp(a, "--scsi")) scsi = 1;
+        else if (!strcmp(a, "--disk") && v) { disk_path[ndisk++ & 3] = v; k++; }
+        else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; k++; }
         else usage();
     }
     if (!prom_path) usage();
@@ -151,6 +155,17 @@ int main(int argc, char **argv)
     M.io_log = io_log;
     M.heart_log = heart;
     M.ioc3_log = ioc3;
+    M.scsi_log = scsi;
+    /* dischi sul bus interno 0 dall'ID 1 (i vani sono 1-3, dksc(0,1) e' il disco di
+       sistema), CD-ROM sul bus esterno 1 all'ID 6 (la PROM cerca solo li' gli altri ID) */
+    for (int k = 0; k < ndisk && k < 3; k++) {
+        if (oct_attach_scsi(&M, 0, 1 + k, SCSI_DISK, disk_path[k], 0)) { printf("non riesco ad aprire %s\n", disk_path[k]); return 1; }
+        printf("SCSI 0 ID %d: disco %s (%llu MB)\n", 1 + k, disk_path[k], (unsigned long long)(M.disk[0][1 + k].blocks >> 11));
+    }
+    if (cdrom_path) {
+        if (oct_attach_scsi(&M, 1, 6, SCSI_CDROM, cdrom_path, 1)) { printf("non riesco ad aprire %s\n", cdrom_path); return 1; }
+        printf("SCSI 1 ID 6: CD-ROM %s\n", cdrom_path);
+    }
     if (mips) M.ps_per_insn = 1000000u / mips;
     printf("PROM %s: %ld byte, RAM %u MB\n", prom_path, prom_size, ram_mb);
 

@@ -26,6 +26,7 @@
 #include "cpu/r4k.h"
 #include "mem/physmem.h"
 #include "octane/ds1687.h"
+#include "octane/qlisp.h"
 
 #define OCT_PROM_SIZE   (1u << 20)     /* immagine della PROM (MAME ip30prom) */
 #define OCT_FLASH_SIZE  (2u << 20)     /* Sharp LH28F016SU: 2 MB, l'ambiente (PDS) e' a +0xF0000 */
@@ -41,6 +42,7 @@ typedef struct OctHeart {
     uint64_t cause;
     uint64_t compare, trigger, sync;
     uint64_t count_ofs;                /* count = tempo / 80 ns + count_ofs */
+    uint64_t last_count;               /* per il confronto con compare (24 bit) */
     uint64_t wregs[0x100 / 8];         /* registri da widget, a 0x18000000 */
 } OctHeart;
 
@@ -74,10 +76,15 @@ typedef struct Octane {
     OctHeart heart;
     uint64_t xbow[0x400 / 8];          /* registri dello XBOW */
     uint64_t bridge[0x300 / 8];        /* registri del BRIDGE */
+    uint64_t bridge_ate[128];          /* ATE interne: traduzione dei DMA PCI 0x40000000-0x7FFFFFFF */
+    uint8_t  bridge_pins;              /* piedini di interrupt alti */
+    uint8_t  bridge_sent;              /* piedini per cui e' partito l'interrupt al HEART */
     uint32_t pcicfg[8][64];            /* spazio di configurazione PCI per slot (parole little-endian) */
     uint32_t ioc3[0x200 / 4];          /* registri dell'IOC3 da 0 a 0x1FF */
     OctUart  uart[2];                  /* 0 = A (console), 1 = B */
     Ds1687   rtc;                      /* orologio sul bytebus dell'IOC3 */
+    QlIsp    ql[2];                    /* SCSI 0 (interno) e 1 (esterno), slot PCI 0 e 1 */
+    ScsiDev  disk[2][QL_TARGETS];      /* dispositivi collegati, per bus e ID */
 
     uint32_t ps_per_insn;              /* picosecondi per istruzione: 1e6 / MIPS */
     int      power_off;
@@ -85,6 +92,7 @@ typedef struct Octane {
     /* uscita della seriale (console) e log degli accessi sconosciuti */
     int      heart_log;                /* passa al log anche le scritture dei registri del HEART */
     int      ioc3_log;                 /* e gli accessi ai registri dell'IOC3 e della seriale */
+    int      scsi_log;                 /* comandi SCSI e mailbox dei QLogic (stderr) */
     void   (*tx)(struct Octane *m, int port, uint8_t ch);
     void   (*io_log)(struct Octane *m, int write, uint64_t pa, int size, uint64_t val, const char *what);
 } Octane;
@@ -95,6 +103,8 @@ void oct_reset(Octane *m);
 uint64_t oct_run(Octane *m, uint64_t n);
 /* un carattere ricevuto sulla seriale (0 = A) */
 void oct_serial_rx(Octane *m, int port, uint8_t ch);
+/* collega un'immagine al bus SCSI bus (0, 1), ID id: 0 = ok */
+int  oct_attach_scsi(Octane *m, int bus, int id, int type, const char *path, int readonly);
 
 static inline uint64_t oct_now_ns(const Octane *m) { return m->cpu.icount * m->ps_per_insn / 1000; }
 static inline uint64_t oct_insn_per_ms(const Octane *m) { return 1000000000ull / m->ps_per_insn; }

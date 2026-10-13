@@ -37,6 +37,10 @@ add_test(NAME cpu COMMAND test_r4k)
 add_executable(r4k_oracle tests/r4k_oracle.c)
 target_link_libraries(r4k_oracle r4kcore)
 
+# Dispositivi SCSI su file immagine (disco, CD-ROM), comuni alle macchine
+add_library(scsicore STATIC src/indy/scsi_dev.c)
+target_include_directories(scsicore PUBLIC src)
+
 # Macchina Indy (IP24): MC, HPC3, IOC/INT3, 8254, seriale, orologio, EEPROM
 add_library(indycore STATIC
     src/indy/indy.c
@@ -48,11 +52,10 @@ add_library(indycore STATIC
     src/indy/eeprom93.c
     src/indy/kbc8042.c
     src/indy/wd33c93.c
-    src/indy/scsi_dev.c
     src/indy/newport.c
     src/frontend/png.c
 )
-target_link_libraries(indycore r4kcore)
+target_link_libraries(indycore r4kcore scsicore)
 
 # Test dei dispositivi dell'Indy
 add_executable(test_devices tests/test_devices.c)
@@ -74,8 +77,9 @@ target_link_libraries(mipsdis r4kcore)
 add_library(octanecore STATIC
     src/octane/octane.c
     src/octane/ds1687.c
+    src/octane/qlisp.c
 )
-target_link_libraries(octanecore r4kcore)
+target_link_libraries(octanecore r4kcore scsicore)
 
 add_executable(octane_boot tools/octane_boot.c)
 target_link_libraries(octane_boot octanecore)

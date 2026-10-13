@@ -47,6 +47,9 @@ static void log_io(Octane *m, int write, uint64_t pa, int size, uint64_t val, co
 
 /* ---- interrupt: HEART -> CPU ---- */
 
+static void bridge_update_irq(Octane *m);
+static uint32_t bridge_reg32(const Octane *m, uint32_t off);
+
 static void update_irq(Octane *m)
 {
     uint64_t p = m->heart.isr & m->heart.imr[0];
@@ -370,10 +373,115 @@ static int ioc3_write(Octane *m, uint32_t off, int size, uint64_t val)
    a 8 e 16 bit l'indirizzo e' scambiato come sul bus big-endian. Gli slot
    vuoti leggono tutti 1. */
 
+/* BAR dei dispositivi: dimensione e spazio (I/O o memoria) */
+typedef struct PciBar { uint32_t size; int io; } PciBar;
+static const PciBar pci_bars[8][6] = {
+    { { 0x100, 1 }, { 0x1000, 0 } },    /* QLogic: registri in I/O e in memoria */
+    { { 0x100, 1 }, { 0x1000, 0 } },
+    { { 0x100000, 0 } },                /* IOC3: 1 MB di memoria */
+};
+
 static const uint32_t pci_ids[8] = {
-    0, 0, 0x000310A9,                   /* slot 2: IOC3 (SGI 10A9:0003) */
+    0x10201077, 0x10201077,             /* slot 0, 1: QLogic ISP1040 (1077:1020), SCSI 0 e 1 */
+    0x000310A9,                         /* slot 2: IOC3 (SGI 10A9:0003) */
     0, 0, 0, 0, 0
 };
+
+/* ---- QLogic nelle finestre di dispositivo 0 e 1 del BRIDGE ----
+   Mezze parole: indirizzo ^ 2, valore naturale; i byte di conseguenza. */
+
+static int ql_io_read(Octane *m, int n, uint32_t off, int size, uint64_t *val)
+{
+    QlIsp *q = &m->ql[n];
+    switch (size) {
+    case 1: { uint16_t v = ql_read(q, (off & ~1u) ^ 2); *val = (off & 1) ? v & 0xFF : v >> 8; break; }
+    case 2: *val = ql_read(q, off ^ 2); break;
+    case 4: *val = (uint32_t)ql_read(q, off + 2) << 16 | ql_read(q, off); break;
+    default:
+        *val = (uint64_t)ql_read(q, off + 2) << 48 | (uint64_t)ql_read(q, off) << 32
+             | (uint64_t)ql_read(q, off + 6) << 16 | ql_read(q, off + 4);
+        break;
+    }
+    return 0;
+}
+
+static int ql_io_write(Octane *m, int n, uint32_t off, int size, uint64_t val)
+{
+    QlIsp *q = &m->ql[n];
+    switch (size) {
+    case 1: {
+        uint16_t v = ql_read(q, (off & ~1u) ^ 2);
+        v = (off & 1) ? (uint16_t)((v & 0xFF00) | (val & 0xFF)) : (uint16_t)((v & 0xFF) | (val & 0xFF) << 8);
+        ql_write(q, (off & ~1u) ^ 2, v);
+        break;
+    }
+    case 2: ql_write(q, off ^ 2, (uint16_t)val); break;
+    case 4: ql_write(q, off + 2, (uint16_t)(val >> 16)); ql_write(q, off, (uint16_t)val); break;
+    default:
+        ql_write(q, off + 2, (uint16_t)(val >> 48)); ql_write(q, off, (uint16_t)(val >> 32));
+        ql_write(q, off + 6, (uint16_t)(val >> 16)); ql_write(q, off + 4, (uint16_t)val);
+        break;
+    }
+    bridge_update_irq(m);                                    /* il chip puo' aver cambiato l'interrupt */
+    return 0;
+}
+
+/* indirizzo PCI di un DMA -> indirizzo XIO, che per il HEART e' quello
+   fisico. Tre finestre:
+     0x80000000-0xFFFFFFFF  diretta: DIR_MAP (0x84) da' l'offset in blocchi
+                            da 2 GB (bit 16:0) e +512 MB (bit 17)
+     0x40000000-0x7FFFFFFF  ATE: una voce per pagina (16 KB con il bit 21
+                            del controllo del widget, se no 4 KB), indirizzo
+                            nei bit 47:12, bit 0 valida
+     sopra i 4 GB           PCI a 64 bit: attributi nei bit 63:48
+   Fuori da queste, o con un'ATE non valida: ~0. */
+static uint64_t pci_to_phys(Octane *m, uint64_t pci)
+{
+    if (pci >> 32) return pci & 0x0000FFFFFFFFFFFFull;
+    if (pci & 0x80000000u) {
+        uint32_t dm = bridge_reg32(m, 0x84);
+        return ((uint64_t)(dm & 0x1FFFF) << 31) + (dm & 0x20000 ? 0x20000000u : 0) + (pci & 0x7FFFFFFFu);
+    }
+    if (pci & 0x40000000u) {
+        uint32_t page = (bridge_reg32(m, 0x24) & (1u << 21)) ? 0x4000 : 0x1000;
+        uint32_t idx = (uint32_t)(pci & 0x3FFFFFFF) / page;
+        if (idx >= 128 || !(m->bridge_ate[idx] & 1)) return ~0ull;
+        return (m->bridge_ate[idx] & 0x0000FFFFFFFFF000ull & ~(uint64_t)(page - 1)) + (pci & (page - 1));
+    }
+    return ~0ull;
+}
+
+/* un DMA puo' attraversare piu' pagine ATE: si spezza a pagine da 4 KB */
+static uint32_t dma_pages(Octane *m, uint64_t pci, uint8_t *buf, uint32_t len, int write)
+{
+    uint32_t done = 0;
+    while (done < len) {
+        uint32_t n = 0x1000 - (uint32_t)((pci + done) & 0xFFF);
+        if (n > len - done) n = len - done;
+        uint64_t pa = pci_to_phys(m, pci + done);
+        if (pa == ~0ull) break;
+        uint32_t k = write ? pm_dma_write(&m->pm, pa, buf + done, n) : pm_dma_read(&m->pm, pa, buf + done, n);
+        done += k;
+        if (k < n) break;
+    }
+    return done;
+}
+
+static uint32_t ql_dma_read(void *ctx, uint64_t pci, uint8_t *dst, uint32_t len)
+{
+    return dma_pages(ctx, pci, dst, len, 0);
+}
+
+static uint32_t ql_dma_write(void *ctx, uint64_t pci, const uint8_t *src, uint32_t len)
+{
+    return dma_pages(ctx, pci, (uint8_t *)src, len, 1);
+}
+
+static void ql_log(void *ctx, const char *msg)
+{
+    Octane *m = ctx;
+    if (m->scsi_log) fprintf(stderr, "%s  [pc=%llX]\n", msg, (unsigned long long)m->cpu.pc);
+}
 
 static int pcicfg_read(Octane *m, uint32_t off, int size, uint64_t *val)
 {
@@ -407,7 +515,48 @@ static int pcicfg_write(Octane *m, uint32_t off, int size, uint64_t val)
     case 2: { int sh = 8 * ((r & 2) ^ 2); *w = (*w & ~(0xFFFFu << sh)) | ((uint32_t)val & 0xFFFF) << sh; break; }
     default: *w = (uint32_t)val; break;
     }
+    if (r >= 0x10 && r < 0x28) {                          /* BAR: solo i bit dell'indirizzo */
+        const PciBar *b = &pci_bars[slot][(r - 0x10) >> 2];
+        *w = b->size ? (*w & ~(b->size - 1)) | (b->io ? 1u : 0u) : 0;
+    }
     return 0;
+}
+
+/* Finestre di dispositivo del BRIDGE: 0 e 1 da 2 MB a 0x200000, 2..7 da
+   1 MB a 0x600000. Il registro del dispositivo della finestra (0x204 + 8 w)
+   da' l'indirizzo PCI (bit 11:0 = bit 31:20) e lo spazio (bit 12: memoria,
+   se no I/O); risponde il dispositivo che ha un BAR su quell'indirizzo. */
+static int pci_decode(Octane *m, uint32_t off, int *slot, uint32_t *dev_off)
+{
+    int w = off < 0x600000 ? (int)((off - 0x200000) >> 21) : 2 + (int)((off - 0x600000) >> 20);
+    uint32_t woff = off < 0x600000 ? off & 0x1FFFFF : off & 0xFFFFF;
+    uint32_t dev = bridge_reg32(m, 0x204 + 8u * (uint32_t)w);
+    uint32_t pci = ((dev & 0xFFF) << 20) + woff;
+    int io = !(dev & 0x1000);
+    for (int s = 0; s < 8; s++) {
+        if (!pci_ids[s]) continue;
+        for (int b = 0; b < 6; b++) {
+            const PciBar *bar = &pci_bars[s][b];
+            if (!bar->size || bar->io != io) continue;
+            uint32_t base = m->pcicfg[s][4 + b] & ~(bar->size - 1);
+            if (pci - base < bar->size) { *slot = s; *dev_off = pci - base; return 1; }
+        }
+    }
+    return 0;
+}
+
+static int pci_dev_read(Octane *m, uint32_t pa, uint32_t off, int size, uint64_t *val)
+{
+    int slot; uint32_t o;
+    if (!pci_decode(m, off, &slot, &o)) { log_io(m, 0, pa, size, 0, "PCI: nessuno"); *val = 0; return 0; }
+    return slot == 2 ? ioc3_read(m, o, size, val) : ql_io_read(m, slot, o, size, val);
+}
+
+static int pci_dev_write(Octane *m, uint32_t pa, uint32_t off, int size, uint64_t val)
+{
+    int slot; uint32_t o;
+    if (!pci_decode(m, off, &slot, &o)) { log_io(m, 1, pa, size, val, "PCI: nessuno"); return 0; }
+    return slot == 2 ? ioc3_write(m, o, size, val) : ql_io_write(m, slot, o, size, val);
 }
 
 /* ---- BRIDGE (widget 15): registri, configurazione PCI, dispositivi ---- */
@@ -417,13 +566,16 @@ static int bridge_read(void *ctx, uint32_t pa, int size, uint64_t *val)
     Octane *m = ctx;
     uint32_t off = pa - SWIN(BRIDGE_W);
     if ((off & ~7u) == 0xB0) { *val = sub_read(3, off, size); return 0; }   /* NIC: vedi IOC3 MCR */
+    if ((off & ~7u) == 0x100) { *val = sub_read(m->bridge_pins, off, size); return 0; }  /* INT_STATUS */
     if (off < sizeof m->bridge) {
         *val = sub_read(m->bridge[off >> 3], off, size);
         if (m->ioc3_log) log_io(m, 0, pa, size, *val, "BRIDGE reg");
         return 0;
     }
     if (off >= 0x20000 && off < 0x28000) return pcicfg_read(m, off - 0x20000, size, val);
-    if (off >= 0x600000 && off < 0x700000) return ioc3_read(m, off - 0x600000, size, val);
+    if (off >= 0x10000 && off < 0x10400) { *val = sub_read(m->bridge_ate[(off - 0x10000) >> 3] >> 32, off | 4, size); return 0; }
+    if (off >= 0x11000 && off < 0x11400) { *val = sub_read((uint32_t)m->bridge_ate[(off - 0x11000) >> 3], off | 4, size); return 0; }
+    if (off >= 0x200000 && off < 0xC00000) return pci_dev_read(m, pa, off, size, val);
     log_io(m, 0, pa, size, 0, "BRIDGE");
     *val = 0;
     return 0;
@@ -435,10 +587,16 @@ static int bridge_write(void *ctx, uint32_t pa, int size, uint64_t val)
     uint32_t off = pa - SWIN(BRIDGE_W);
     if (off < sizeof m->bridge && off >= 8) {
         m->bridge[off >> 3] = sub_write(m->bridge[off >> 3], off, size, val);
+        if (off >= 0x100 && off < 0x180) bridge_update_irq(m);    /* abilitazioni, vettori */
         return 0;
     }
     if (off >= 0x20000 && off < 0x28000) return pcicfg_write(m, off - 0x20000, size, val);
-    if (off >= 0x600000 && off < 0x700000) return ioc3_write(m, off - 0x600000, size, val);
+    if (off >= 0x10000 && off < 0x10400) {                  /* ATE interne (64 bit) */
+        uint64_t *a = &m->bridge_ate[(off - 0x10000) >> 3];
+        *a = sub_write(*a, off, size, val);
+        return 0;
+    }
+    if (off >= 0x200000 && off < 0xC00000) return pci_dev_write(m, pa, off, size, val);
     log_io(m, 1, pa, size, val, "BRIDGE");
     return 0;
 }
@@ -564,12 +722,24 @@ int oct_init(Octane *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb
     m->pm.unmapped_write = unmapped_write;
     m->pm.unmapped_ctx = m;
     ds1687_init(&m->rtc, (int64_t)time(NULL));
+    for (int k = 0; k < 2; k++) {
+        if (ql_init(&m->ql[k])) return -1;
+        m->ql[k].dma_read = ql_dma_read;
+        m->ql[k].dma_write = ql_dma_write;
+        m->ql[k].log = ql_log;
+        m->ql[k].ctx = m;
+        m->ql[k].bus = k;
+    }
     oct_reset(m);
     return 0;
 }
 
 void oct_free(Octane *m)
 {
+    for (int b = 0; b < 2; b++) {
+        for (int k = 0; k < QL_TARGETS; k++) scsi_dev_close(&m->disk[b][k]);
+        ql_free(&m->ql[b]);
+    }
     r4k_free(&m->cpu);
     pm_free(&m->pm);
     for (int b = 0; b < 4; b++) free(m->bank[b]);
@@ -597,20 +767,75 @@ void oct_reset(Octane *m)
         m->xbow[(blk + 0x38) >> 3] = on ? 0x20u : 0;
     }
     memset(m->bridge, 0, sizeof m->bridge);
+    memset(m->bridge_ate, 0, sizeof m->bridge_ate);
+    m->bridge_pins = m->bridge_sent = 0;
     m->bridge[0] = BRIDGE_ID;
     m->bridge[1] = 0x20;                               /* WIDGET_STATUS: bus PCI (non GIO) */
     memset(m->pcicfg, 0, sizeof m->pcicfg);
     for (int s = 0; s < 8; s++) m->pcicfg[s][0] = pci_ids[s];
     m->pcicfg[2][2] = 0xFF000001;                      /* IOC3: classe "altro", revisione 1 */
+    m->pcicfg[0][2] = m->pcicfg[1][2] = 0x01000005;    /* QLogic: SCSI, revisione 5 (1040B) */
+    for (int k = 0; k < 2; k++) ql_reset(&m->ql[k]);
     memset(m->ioc3, 0, sizeof m->ioc3);
     memset(m->uart, 0, sizeof m->uart);
     m->power_off = 0;
     update_irq(m);
 }
 
+int oct_attach_scsi(Octane *m, int bus, int id, int type, const char *path, int readonly)
+{
+    if (bus < 0 || bus > 1 || id < 0 || id >= QL_TARGETS) return -1;
+    ScsiDev *d = &m->disk[bus][id];
+    if (scsi_dev_open(d, type, path, readonly)) return -1;
+    m->ql[bus].dev[id] = d;
+    return 0;
+}
+
+/* Interrupt dei dispositivi PCI: lo slot n alza il piedino n del BRIDGE.
+   Su un fronte di salita di un piedino abilitato (INT_ENABLE, 0x10C) il
+   BRIDGE manda al HEART un pacchetto che accende il bit dell'ISR scritto in
+   INT_ADDR del piedino (0x134 + 8 n, bit 5:0); se INT_MODE (0x11C) lo
+   chiede, sulla discesa ne manda uno che lo spegne. INT_STATUS (0x104)
+   mostra i piedini. */
+static uint32_t bridge_reg32(const Octane *m, uint32_t off)
+{
+    return (uint32_t)sub_read(m->bridge[off >> 3], off, 4);
+}
+
+static void bridge_update_irq(Octane *m)
+{
+    uint8_t pins = 0;
+    if (ql_irq(&m->ql[0])) pins |= 1;
+    if (ql_irq(&m->ql[1])) pins |= 2;
+    m->bridge_pins = pins;
+    uint32_t enable = bridge_reg32(m, 0x10C), mode = bridge_reg32(m, 0x11C);
+    for (int p = 0; p < 8; p++) {
+        uint8_t bit = (uint8_t)(1u << p);
+        uint64_t vec = 1ull << (bridge_reg32(m, 0x134 + 8u * (uint32_t)p) & 63);
+        if ((pins & bit) && (enable & bit)) {
+            if (!(m->bridge_sent & bit)) { m->heart.isr |= vec; m->bridge_sent |= bit; }
+        } else if (m->bridge_sent & bit) {
+            m->bridge_sent &= (uint8_t)~bit;
+            if (mode & bit) m->heart.isr &= ~vec;
+        }
+    }
+    update_irq(m);
+}
+
+/* timer del HEART: il bit 50 dell'ISR quando i 24 bit bassi del contatore
+   raggiungono compare */
+static void heart_timer(Octane *m)
+{
+    uint64_t now = heart_count(m), last = m->heart.last_count;
+    uint64_t d = (m->heart.compare - last) & 0xFFFFFF;
+    if (d && d <= now - last) m->heart.isr |= 1ull << 50;
+    m->heart.last_count = now;
+}
+
 static void service(Octane *m)
 {
-    (void)m;
+    heart_timer(m);
+    bridge_update_irq(m);
 }
 
 uint64_t oct_run(Octane *m, uint64_t n)
