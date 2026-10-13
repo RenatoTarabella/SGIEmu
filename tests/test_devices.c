@@ -12,6 +12,7 @@
 #include "indy/z85c30.h"
 #include "indy/wd33c93.h"
 #include "indy/kbc8042.h"
+#include "octane/ds1687.h"
 
 static int failures, checks;
 #define CHECK_EQ(a, b) do { long long a_ = (long long)(a), b_ = (long long)(b); checks++; \
@@ -246,6 +247,42 @@ static void test_scsi_raw_cd(void)
     remove(path);
 }
 
+/* DS1687 dell'Octane: ora in BCD, banco 1 con KF, RAM estesa, PAB */
+static void test_ds1687(void)
+{
+    printf("DS1687\n");
+    static Ds1687 r;
+    ds1687_init(&r, 1790000000);                       /* 2026-09-21 ... UTC */
+    ds1687_select(&r, 9);
+    CHECK_EQ(ds1687_read(&r, 0), 0x26);                /* anno in BCD */
+    ds1687_select(&r, 0x0A);                           /* banco 1 */
+    ds1687_write(&r, 0x30, 0);
+    ds1687_select(&r, 0x4A);
+    CHECK_EQ(ds1687_read(&r, 0) & 0x01, 1);            /* KF: acceso dal pulsante */
+    ds1687_write(&r, 0x00, 0);                         /* azzera i flag */
+    CHECK_EQ(ds1687_read(&r, 0) & 0x07, 0);
+    ds1687_select(&r, 0x48);
+    CHECK_EQ(ds1687_read(&r, 0), 0x20);                /* secolo */
+    ds1687_select(&r, 0x50); ds1687_write(&r, 5, 0);   /* RAM estesa, indirizzo 5 */
+    ds1687_select(&r, 0x53); ds1687_write(&r, 0xA5, 0);
+    ds1687_select(&r, 0x50); ds1687_write(&r, 5, 0);
+    ds1687_select(&r, 0x53);
+    CHECK_EQ(ds1687_read(&r, 0), 0xA5);
+    ds1687_select(&r, 0x0A);                           /* banco 0: NVRAM a 0x40 */
+    ds1687_write(&r, 0x20, 0);
+    ds1687_select(&r, 0x40); ds1687_write(&r, 0x77, 0);
+    CHECK_EQ(ds1687_read(&r, 0), 0x77);
+    /* l'ora avanza col tempo emulato */
+    ds1687_select(&r, 0);
+    int s0 = ds1687_read(&r, 0);
+    int s1 = ds1687_read(&r, 3000000000ull);
+    CHECK_EQ(((s1 >> 4) * 10 + (s1 & 15) + 60 - ((s0 >> 4) * 10 + (s0 & 15))) % 60, 3);
+    CHECK_EQ(r.power_off, 0);
+    ds1687_select(&r, 0x0A); ds1687_write(&r, 0x30, 0);
+    ds1687_select(&r, 0x4A); ds1687_write(&r, 0x08, 0);   /* PAB: spegni */
+    CHECK_EQ(r.power_off, 1);
+}
+
 static void test_kbc(void)
 {
     printf("8042\n");
@@ -301,6 +338,7 @@ int main(void)
     test_wd();
     test_scsi_disk();
     test_scsi_raw_cd();
+    test_ds1687();
     test_kbc();
     printf("%d controlli, %d falliti\n", checks, failures);
     return failures != 0;

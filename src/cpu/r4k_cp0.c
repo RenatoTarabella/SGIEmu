@@ -39,9 +39,9 @@ static int cache_alloc(R4k *c)
         c->ictag_hi = calloc(c->icache_size / c->icache_line, sizeof *c->ictag_hi);
         c->dctag_hi = calloc(c->dcache_size / c->dcache_line, sizeof *c->dctag_hi);
         c->sctag_hi = calloc(c->scache_size / c->scache_line, sizeof *c->sctag_hi);
-        c->icdata = calloc(c->icache_size / 4, sizeof *c->icdata);    /* una voce ogni 4 byte */
-        c->dcdata = calloc(c->dcache_size / 4, sizeof *c->dcdata);
-        c->scdata = calloc(c->scache_size / 4, sizeof *c->scdata);
+        c->icdata = calloc(c->icache_size / 2, sizeof *c->icdata);    /* dati ed ECC ogni 4 byte */
+        c->dcdata = calloc(c->dcache_size / 2, sizeof *c->dcdata);
+        c->scdata = calloc(c->scache_size / 2, sizeof *c->scdata);
         if (!c->ictag_hi || !c->dctag_hi || !c->sctag_hi || !c->icdata || !c->dcdata || !c->scdata)
             return -1;
     }
@@ -296,7 +296,7 @@ void r4k_cp0_write(R4k *c, int reg, uint64_t v)
         break;
     }
     case CP0_XCONTEXT: c->cp0[reg] = (old & 0x1FFFFFFFFull) | (v & ~0x1FFFFFFFFull); break;
-    case CP0_ECC:      c->cp0[reg] = v & 0xFF; break;
+    case CP0_ECC:      c->cp0[reg] = v & (c->model == R4K_R10000 ? 0x3FF : 0xFF); break;
     case CP0_EPC:
     case CP0_ERROREPC:
     case CP0_LLADDR:   c->cp0[reg] = v; break;
@@ -400,9 +400,9 @@ void r4k_cop0(R4k *c, uint32_t insn)
 /* ---- CACHE: si tengono solo i tag, per le istruzioni sugli indici ---- */
 
 /* R10000: cache a due vie, la via e' il bit 0 dell'indirizzo per le
-   operazioni sugli indici. Si tengono TagLo/TagHi di ogni riga e una
-   parola (TagHi:TagLo) ogni 4 byte per Index Load/Store Data, cosi' i test
-   della PROM rileggono quello che hanno scritto. */
+   operazioni sugli indici. Si tengono TagLo/TagHi di ogni riga e, ogni 4
+   byte, TagHi:TagLo e il registro ECC (10 bit) per Index Load/Store Data,
+   cosi' i test della PROM rileggono quello che hanno scritto. */
 static void r10k_cache_op(R4k *c, uint64_t va, int op, int which)
 {
     uint32_t *tags, *tags_hi, size, line;
@@ -426,11 +426,13 @@ static void r10k_cache_op(R4k *c, uint64_t va, int op, int which)
         tags_hi[idx] = (uint32_t)c->cp0[CP0_TAGHI];
         break;
     case 6:                                                        /* Index Load Data */
-        c->cp0[CP0_TAGLO] = (uint32_t)data[word];
-        c->cp0[CP0_TAGHI] = (uint32_t)(data[word] >> 32);
+        c->cp0[CP0_TAGLO] = (uint32_t)data[2 * word];
+        c->cp0[CP0_TAGHI] = (uint32_t)(data[2 * word] >> 32);
+        c->cp0[CP0_ECC] = data[2 * word + 1];
         break;
     case 7:                                                        /* Index Store Data */
-        data[word] = (c->cp0[CP0_TAGHI] & 0xFFFFFFFFu) << 32 | (c->cp0[CP0_TAGLO] & 0xFFFFFFFFu);
+        data[2 * word] = (c->cp0[CP0_TAGHI] & 0xFFFFFFFFu) << 32 | (c->cp0[CP0_TAGLO] & 0xFFFFFFFFu);
+        data[2 * word + 1] = c->cp0[CP0_ECC];
         break;
     case 4: case 5:                                                /* Hit_*, Cache Barrier */
         if (op == 5 && which == 0) break;

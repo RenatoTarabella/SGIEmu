@@ -56,7 +56,7 @@ target_link_libraries(indycore r4kcore)
 
 # Test dei dispositivi dell'Indy
 add_executable(test_devices tests/test_devices.c)
-target_link_libraries(test_devices indycore)
+target_link_libraries(test_devices indycore octanecore)
 add_test(NAME devices COMMAND test_devices)
 
 # Avvio dell'Indy da riga di comando (diagnostica del boot della PROM)
@@ -69,6 +69,16 @@ endif()
 # Disassemblatore di file binari (PROM, kernel)
 add_executable(mipsdis tools/mipsdis.c)
 target_link_libraries(mipsdis r4kcore)
+
+# Macchina Octane (IP30): HEART, XBOW, BRIDGE, IOC3
+add_library(octanecore STATIC
+    src/octane/octane.c
+    src/octane/ds1687.c
+)
+target_link_libraries(octanecore r4kcore)
+
+add_executable(octane_boot tools/octane_boot.c)
+target_link_libraries(octane_boot octanecore)
 
 # Immagine di disco vuota
 add_executable(mkdisk tools/mkdisk.c)

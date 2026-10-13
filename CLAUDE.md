@@ -46,6 +46,15 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   sleeps to stay at real time. `png.c` comes from ArchieEmu.
 - `tools/mipsdis.c` disassembles a binary (PROM): `mipsdis FILE BASE FROM COUNT`.
 - `tools/mkdisk.c` creates an empty disk image: `mkdisk FILE MB`.
+- `src/octane` the Octane (IP30): `octane.c` (HEART, XBOW, BRIDGE with PCI
+  config space, IOC3 registers and 16550, flash, memory banks), `ds1687.c`
+  (clock, kickstart/power). `tools/octane_boot.c` is its headless runner
+  (`--prom roms\ip30prom.rev4.9.bin [--ram MB] [--ms] [--keys] [--jit]
+  [--io N] [--exc N] [--heart] [--ioc3] [--stamp] [--trace N]
+  [--trace-at ADDR] [--trace-from ICOUNT] [--dis ADDR,N]`): `--stamp`
+  prefixes console lines with the instruction count, `--trace-from` starts
+  a trace there (the io log then only covers the trace), `--ioc3` logs IOC3,
+  UART, XBOW, BRIDGE and PCI config accesses.
 - `ref/` (git-ignored) holds the Linux IP22 headers and drivers downloaded as
   documentation; read them, never copy code.
 - `roms/` (PROM) and `cdrom/` (IRIX images) exist only locally and are
@@ -445,6 +454,60 @@ R4400:
   indy_boot prints commands per (drawmode0, drawmode1) with pixel counts, the
   rdtsc time spent in Newport accesses, fast-MMU flushes.
 
+## Octane (IP30) facts (checked against the IP30 PROM rev 4.9/4.16)
+
+- PROM to the System Maintenance Menu and Command Monitor on the serial
+  console (`octane_boot ... --keys "{T=4}{CR}{T=8}5{CR}{T=10}hinv{CR}"`;
+  the first `{CR}` answers "Diagnostics failed. [Press any key]"). hinv:
+  IP30, 200 MHz R10000, 32+32 KB, 1 MB S-cache, 256 MB, ef0. ~22 s emulated
+  in 3 s with `--jit`. Diagnostics fail where hardware is still missing:
+  NICs, keyboard, QLogic SCSI (slots 0/1), Ethernet.
+- Physical map: HEART regs `0x0FF00000`; widget n small window
+  `0x10000000 | n << 24` (0 XBOW, 8 HEART, 15 BRIDGE); RAM from
+  `0x20000000`, its first 256 KB also at 0 (exception vectors; `OCT_LOWMEM`);
+  BRIDGE: regs, PCI type 0 config at +0x20000 + slot << 12, device windows
+  from +0x200000 (IOC3 = slot 2 = `0x1F600000`), flash at +0xC00000.
+  Widget registers are 64-bit, 32-bit values at +4.
+- Reset: the PROM checks the power-on reason in the DS1687 (bank 1 reg 4A
+  bit 0 KF = kickstart, i.e. the power button); without it it blinks the
+  LED (IOC3 GPIO) and waits for BRIDGE int status bit 6 (power switch).
+  PAB (4A bit 3) powers off. The DS1687 is on the IOC3 bytebus: index at
+  +0xA0000, data at +0xC0000.
+- Register tests: the PROM writes walking ones to IOC3 SBBR_H (0xB0), BRIDGE
+  0x284, XBOW 0x29C and reads them back: unknown registers must remember.
+- Memory: HEART MEMCFG (4 x 32 bit at 0x20: valid 31, density 24:22, size
+  21:16 in 32 MB units - 1, base 8:0 in 32 MB units). The PROM probes each
+  bank at density 6 / 2 GB at `0xA0000000` and looks at which address bits
+  alias (+256 B, +128 MB, +32 MB, +64 MB; +1 GB with HEART rev < 6); the
+  pattern indexes a table at `0x9FC1BF38`. Emulated banks are DIMM types of
+  that table (`dimm_types[]`, even densities only, HEART rev 6 to avoid the
+  4-bank 64 Mb special case); until MEMCFG matches the type a few probe words
+  emulate the aliasing, then RAM is mapped.
+- R10000 caches: the PROM tests S-cache data and ECC SRAM via Index
+  Store/Load Data with the ECC register (10 bits) — see `r10k_cache_op`.
+- Flash: Sharp LH28F016SU (manufacturer 0xB0, device 0x66A8), 2 MB x16,
+  Intel commands (0x90 ID, 0xFF read, 0x70 status, 0x40 program, 0x20/0xD0
+  64 KB block erase); FLASH_WR_EN/FLASH_SEL are IOC3 GPIOs. The environment
+  store (PDS, "FPDS" header) is at +0xF0000 and holds the previous owner's
+  settings and a log; the env shown by printenv comes from the DS1687.
+- Device discovery: XBOW link block per widget at 0x100 + (w - 8) * 0x40:
+  the PROM needs aux status (+0x3C) bit 5 "present" and link status (+0x14)
+  bit 31 "alive". BRIDGE WIDGET_STATUS (+0x0C) bit 5 = PCI bus (else GIO:
+  no PCI scan). Empty PCI slots must bus-error on config reads (master
+  abort), or hinv lists them as vendor 0xffff. Device install is a tree of
+  {install fn, parent, ..., match} at `0x9FCA3220`; IOC3 is matched by PCI
+  ID 10A9:0003 and only in BaseIO slot 2.
+- IOC3: 16550 registers in standard order at +0x20178 (A) / +0x20170 (B)
+  when the BRIDGE device register has no byte swap (bit 13); Linux's struct
+  order is the swapped one. SIO_CR bit 22 = arbiter idle (polled). MCR
+  (+0x30), BRIDGE NIC (+0xB4) and HEART MLAN_CTL (+0xB8) are MicroLAN
+  (1-Wire): bit 1 done, bit 0 line; for now the bus is empty, hence
+  "nic_eaddr: No presence pulse" and eaddr 00:00:00:00:00:00 (the MAC comes
+  from a NIC, IRIX will need one).
+- Tools for this kind of work: `strref.py` style search (addresses are built
+  with lui/daddiu/dsll; strings are often base + offset or in tables), and
+  traces with `--trace-from` around a console message found with `--stamp`.
+
 ## Lessons learned
 
 - **Backslashes in shell commands on this machine**: the Bash tool turns
@@ -546,7 +609,10 @@ R4400:
    which have symbols), then IP35. Prerequisites still missing locally:
    the IP30 PROM, IRIX 6.5 install CDs with IP30 support (the local
    irix65.img only has IP22 kernel bits), later the IP35 PROM and a late
-   6.5.x release. Old plan, kept for reference: Indigo2. It shares MC and
+   6.5.x release. **2026-10-13: R10000 model done, Octane PROM to the
+   Command Monitor** (see "Octane (IP30) facts"). Next: NIC (MAC address),
+   keyboard (IOC3 PS/2), QLogic ISP SCSI, then IRIX 6.5 install media.
+   Old plan, kept for reference: Indigo2. It shares MC and
    HPC3 with the Indy; differences are the board (IP22 R4400; IP26 R8000
    and IP28 R10000 are MIPS IV), front panel, EISA, and the graphics
    (Extreme/XL/Impact). Then ethernet, audio (HAL2).
