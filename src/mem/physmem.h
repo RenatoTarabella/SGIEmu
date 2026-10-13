@@ -70,6 +70,10 @@ typedef struct PhysMem {
     int       nmirror;
 
     uint32_t  map_gen;          /* cresce a ogni cambio della mappa */
+
+    /* bit dell'indirizzo fisico decodificati (default tutti): l'Octane
+       ignora i bit 39:38 che IRIX accende in EntryLo */
+    uint64_t  addr_mask;
 } PhysMem;
 
 int  pm_init(PhysMem *pm);
@@ -102,6 +106,7 @@ const char *pm_io_name(const PhysMem *pm, uint64_t pa);
 
 static inline uint8_t *pm_host(const PhysMem *pm, uint64_t pa)
 {
+    pa &= pm->addr_mask;
     if (pa >> 32) return NULL;
     uint8_t *p = pm->host[pa >> PM_PAGE_SHIFT];
     return p ? p + (pa & PM_PAGE_MASK) : NULL;

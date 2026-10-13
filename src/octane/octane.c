@@ -48,6 +48,14 @@ static void log_io(Octane *m, int write, uint64_t pa, int size, uint64_t val, co
 /* ---- interrupt: HEART -> CPU ---- */
 
 static void bridge_update_irq(Octane *m);
+static void ioc3_serial(Octane *m);
+
+/* seriali dell'IOC3 in DMA: SSCR (A 0xB8, B 0xD4) e i suoi bit */
+#define SSCR_RX_DRAIN    0x08000000u
+#define SSCR_DMA_EN      0x10000000u
+#define SSCR_DMA_PAUSE   0x20000000u
+#define SSCR_PAUSE_STATE 0x40000000u
+#define SSCR_RESET       0x80000000u
 static uint32_t bridge_reg32(const Octane *m, uint32_t off);
 
 static void update_irq(Octane *m)
@@ -338,6 +346,15 @@ static int ioc3_read(Octane *m, uint32_t off, int size, uint64_t *val)
         *val = (m->ioc3[off >> 2] & 0x7FFFFFFFu) | 0x200000;
         return 0;
     }
+    if ((off == 0xB8 || off == 0xD4) && size == 4) {        /* SSCR: la pausa ha effetto subito */
+        uint32_t v = m->ioc3[off >> 2] & ~(SSCR_RESET | SSCR_PAUSE_STATE | SSCR_RX_DRAIN);   /* drain: subito finito */
+        *val = v | ((v & SSCR_DMA_PAUSE) ? SSCR_PAUSE_STATE : 0);
+        return 0;
+    }
+    if ((off == 0xD0 || off == 0xEC) && size == 4) {        /* shadow: DCD, CTS, trasmettitore vuoto */
+        *val = 0x00900060;
+        return 0;
+    }
     if (off < sizeof m->ioc3 && size == 4) {
         *val = m->ioc3[off >> 2];
         if (m->ioc3_log) log_io(m, 0, IOC3_BASE + off, size, *val, "IOC3 reg");
@@ -358,8 +375,15 @@ static int ioc3_write(Octane *m, uint32_t off, int size, uint64_t val)
         return 0;
     }
     if (off < sizeof m->ioc3 && size == 4) {
-        m->ioc3[off >> 2] = (uint32_t)val;
         if (m->ioc3_log) log_io(m, 1, IOC3_BASE + off, size, val, "IOC3 reg");
+        switch (off) {
+        case 0x1C: m->ioc3[off >> 2] &= ~(uint32_t)val; break;            /* SIO_IR: 1 azzera */
+        case 0x20: m->ioc3[0x20 >> 2] |= (uint32_t)val; break;            /* SIO_IES: abilita */
+        case 0x24: m->ioc3[0x20 >> 2] &= ~(uint32_t)val; break;           /* SIO_IEC: disabilita */
+        default:   m->ioc3[off >> 2] = (uint32_t)val; break;
+        }
+        if (off >= 0xB0 && off < 0xF0) ioc3_serial(m);                     /* seriali: puntatori, SSCR */
+        bridge_update_irq(m);
         return 0;
     }
     if (off >= 0xA0000 && off < 0xC0000) { ds1687_select(&m->rtc, (uint8_t)val); return 0; }
@@ -715,6 +739,7 @@ int oct_init(Octane *m, const uint8_t *prom, uint32_t prom_size, unsigned ram_mb
     }
 
     if (pm_init(&m->pm) || r4k_init(&m->cpu, &m->pm) || r4k_set_model(&m->cpu, R4K_R10000)) return -1;
+    m->pm.addr_mask = 0x3FFFFFFFFFull;                  /* 38 bit: IRIX accende i bit 39:38 in EntryLo */
     pm_map_io(&m->pm, HEART_BASE, HEART_SIZE, m, heart_read, heart_write, "HEART");
     pm_map_io(&m->pm, SWIN(0), 0x01000000u, m, xbow_read, xbow_write, "XBOW");
     pm_map_io(&m->pm, SWIN(8), 0x01000000u, m, heart_w_read, heart_w_write, "HEART widget");
@@ -811,19 +836,79 @@ static void bridge_update_irq(Octane *m)
     uint8_t pins = 0;
     if (ql_irq(&m->ql[0])) pins |= 1;
     if (ql_irq(&m->ql[1])) pins |= 2;
+    if (m->ioc3[0x1C >> 2] & m->ioc3[0x20 >> 2]) pins |= 4;   /* IOC3: SIO_IR & abilitati */
     m->bridge_pins = pins;
     uint32_t enable = bridge_reg32(m, 0x10C), mode = bridge_reg32(m, 0x11C);
     for (int p = 0; p < 8; p++) {
         uint8_t bit = (uint8_t)(1u << p);
         uint64_t vec = 1ull << (bridge_reg32(m, 0x134 + 8u * (uint32_t)p) & 63);
         if ((pins & bit) && (enable & bit)) {
-            if (!(m->bridge_sent & bit)) { m->heart.isr |= vec; m->bridge_sent |= bit; }
+            if (!(m->bridge_sent & bit)) {
+                m->heart.isr |= vec; m->bridge_sent |= bit;
+                if (getenv("OCT_IRQLOG")) fprintf(stderr, "[irq piedino %d -> vettore %d, INT_ADDR %08X pc=%llX]\n", p,
+                                                  (int)(bridge_reg32(m, 0x134 + 8u * (uint32_t)p) & 63),
+                                                  bridge_reg32(m, 0x134 + 8u * (uint32_t)p), (unsigned long long)m->cpu.pc);
+            }
         } else if (m->bridge_sent & bit) {
             m->bridge_sent &= (uint8_t)~bit;
             if (mode & bit) m->heart.isr &= ~vec;
         }
     }
     update_irq(m);
+}
+
+/* Seriali dell'IOC3 in DMA (driver di IRIX). SBBR_H:SBBR_L (0xB0, 0xB4) e'
+   l'indirizzo PCI di quattro anelli da 1 KB (4 KB con il bit 0 di SBBR_L):
+   TX A, RX A, TX B, RX B. Una voce e' di 8 byte: 4 caratteri e 4 byte di
+   stato. Per porta (A da 0xB8, B da 0xD4): SSCR +0, STPIR +4 (prodotto
+   TX, lo scrive il driver), STCIR +8 (consumato TX), SRPIR +0xC (prodotto
+   RX, lo scrive l'IOC3), SRCIR +0x10 (consumato RX). In TX i byte con lo
+   stato 01xxxxxx sono validi, 0x20 chiede l'interrupt "explicit"; in RX si
+   scrive un carattere per voce con DATA_VALID (0x80). SIO_IR: A TX vuoto
+   bit 0, RX timer bit 3, explicit bit 7; B gli stessi da bit 9. */
+static void ioc3_serial(Octane *m)
+{
+    uint32_t ring = (m->ioc3[0xB4 >> 2] & 1) ? 0x1000 : 0x400, mask = (ring - 1) & ~7u;
+    uint64_t base = (uint64_t)m->ioc3[0xB0 >> 2] << 32 | (m->ioc3[0xB4 >> 2] & ~(4 * ring - 1));
+    for (int port = 0; port < 2; port++) {
+        uint32_t r = port ? 0xD4 : 0xB8, sh = port ? 9 : 0;
+        uint32_t sscr = m->ioc3[r >> 2];
+        if (sscr & SSCR_RESET) {                              /* reset dei canali */
+            m->ioc3[(r + 4) >> 2] = m->ioc3[(r + 8) >> 2] = 0;
+            m->ioc3[(r + 12) >> 2] = m->ioc3[(r + 16) >> 2] = 0;
+            continue;
+        }
+        if (!(sscr & SSCR_DMA_EN) || (sscr & SSCR_DMA_PAUSE)) continue;
+        uint64_t tx = base + (uint64_t)(2 * port) * ring, rx = tx + ring;
+        /* trasmissione */
+        uint32_t prod = m->ioc3[(r + 4) >> 2] & mask, *cons = &m->ioc3[(r + 8) >> 2];
+        int sent = 0, explicit = 0;
+        while ((*cons & mask) != prod) {
+            uint8_t e[8];
+            if (dma_pages(m, tx + (*cons & mask), e, 8, 0) < 8) break;
+            for (int k = 0; k < 4; k++) {
+                if ((e[4 + k] & 0xC0) == 0x40 && m->tx) m->tx(m, port, e[k]);
+                if (e[4 + k] & 0x20) explicit = 1;
+            }
+            *cons = (*cons + 8) & mask;
+            sent = 1;
+        }
+        if (sent || prod == (*cons & mask)) m->ioc3[0x1C >> 2] |= 1u << sh;     /* TX vuoto */
+        if (explicit) m->ioc3[0x1C >> 2] |= 0x80u << sh;
+        /* ricezione: un carattere per voce, finche' c'e' posto */
+        OctUart *u = &m->uart[port];
+        uint32_t *rprod = &m->ioc3[(r + 12) >> 2], rcons = m->ioc3[(r + 16) >> 2] & mask;
+        int got = 0;
+        while (u->rx_n && ((*rprod + 8) & mask) != rcons) {
+            uint8_t e[8] = { u->rx[u->rx_head], 0, 0, 0, 0x80, 0, 0, 0 };
+            u->rx_head = (u->rx_head + 1) % (int)sizeof u->rx;
+            u->rx_n--;
+            dma_pages(m, rx + (*rprod & mask), e, 8, 1);
+            *rprod = (*rprod + 8) & mask;
+            got = 1;
+        }
+        if (got) m->ioc3[0x1C >> 2] |= 0x8u << sh;                               /* RX timer */
+    }
 }
 
 /* timer del HEART: il bit 50 dell'ISR quando i 24 bit bassi del contatore
@@ -839,6 +924,7 @@ static void heart_timer(Octane *m)
 static void service(Octane *m)
 {
     heart_timer(m);
+    ioc3_serial(m);
     bridge_update_irq(m);
 }
 

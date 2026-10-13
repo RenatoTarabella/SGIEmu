@@ -295,7 +295,11 @@ void r4k_cp0_write(R4k *c, int reg, uint64_t v)
         c->cp0[reg] = (old & ~m) | (v & m);
         break;
     }
-    case CP0_XCONTEXT: c->cp0[reg] = (old & 0x1FFFFFFFFull) | (v & ~0x1FFFFFFFFull); break;
+    case CP0_XCONTEXT: {                               /* PTEBase scrivibile, sopra R */
+        uint64_t ro = c->model == R4K_R10000 ? 0x1FFFFFFFFFull : 0x1FFFFFFFFull;
+        c->cp0[reg] = (old & ro) | (v & ~ro);
+        break;
+    }
     case CP0_ECC:      c->cp0[reg] = v & (c->model == R4K_R10000 ? 0x3FF : 0xFF); break;
     case CP0_EPC:
     case CP0_ERROREPC:

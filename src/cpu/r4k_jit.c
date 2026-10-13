@@ -1192,7 +1192,9 @@ static int emit_insn(Comp *k, uint32_t insn, uint64_t pc, int idx, int ds)
             return CONT;
         }
         /* MTC0/DMTC0 di EntryLo0/1 e PageMask: solo memoria (TLB refill) */
-        if (k->kernel && (rs == 4 || rs == 5) && (insn & 0x7FF) == 0 &&
+        /* (sull'R10000 EntryLo ha il PFN fino al bit 33 e MTC0 estende il
+           segno: all'interprete) */
+        if (k->kernel && (rs == 4 || rs == 5) && (insn & 0x7FF) == 0 && k->c->model != R4K_R10000 &&
             (rd == CP0_ENTRYLO0 || rd == CP0_ENTRYLO1 || rd == CP0_PAGEMASK)) {
             gpr_ld(k, 0, RAX, rt);
             alu_ri(e, 0, A_AND, RAX, rd == CP0_PAGEMASK ? 0x01FFE000 : 0x3FFFFFFF);

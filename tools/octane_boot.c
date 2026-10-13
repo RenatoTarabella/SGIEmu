@@ -50,9 +50,19 @@ static void io_log(Octane *m, int write, uint64_t pa, int size, uint64_t val, co
     }
 }
 
+static uint64_t sys_hist[4096];                         /* chiamate di sistema per numero (v0) */
+
 static void on_exc(R4k *c, int code, void *user)
 {
     (void)user;
+    if (code == EXC_SYS) {
+        sys_hist[c->r[2] & 4095]++;
+        static uint64_t n;
+        if (getenv("OCT_SYSLOG") && (n++ % 50000) == 0)    /* un campione ogni 50000 */
+            fprintf(stderr, "[sys %llu a0=%llX a1=%llX a2=%llX epc=%llX ra=%llX]\n", (unsigned long long)c->r[2],
+                    (unsigned long long)c->r[4], (unsigned long long)c->r[5], (unsigned long long)c->r[6],
+                    (unsigned long long)c->cp0[CP0_EPC], (unsigned long long)c->r[31]);
+    }
     if (code == EXC_INT || exc_print_left <= 0) return;
     exc_print_left--;
     newline();
@@ -228,6 +238,18 @@ int main(int argc, char **argv)
     for (int k = 0; k < 8; k++) printf(" %08X", (uint32_t)M.bridge[(0x200 >> 3) + k]);
     printf("\nHEART MEMCFG: %016llX %016llX  modo %016llX\n", (unsigned long long)M.heart.regs[4],
            (unsigned long long)M.heart.regs[5], (unsigned long long)M.heart.regs[0]);
+    printf("chiamate di sistema piu' frequenti:");
+    for (int n = 0; n < 8; n++) {
+        int best = 0;
+        for (int k = 1; k < 4096; k++) if (sys_hist[k] > sys_hist[best]) best = k;
+        if (!sys_hist[best]) break;
+        printf(" %d:%llu", best, (unsigned long long)sys_hist[best]);
+        sys_hist[best] = 0;
+    }
+    printf("\nHEART ISR %016llX IMR0 %016llX compare %06llX  CP0 Count %08llX Compare %08llX\n",
+           (unsigned long long)M.heart.isr, (unsigned long long)M.heart.imr[0],
+           (unsigned long long)M.heart.compare, (unsigned long long)r4k_cp0_read(&M.cpu, CP0_COUNT),
+           (unsigned long long)M.cpu.cp0[CP0_COMPARE]);
     printf("eccezioni:");
     for (int k = 0; k < 32; k++)
         if (c->exc_count[k]) printf(" %s=%llu", r4k_exc_names[k], (unsigned long long)c->exc_count[k]);

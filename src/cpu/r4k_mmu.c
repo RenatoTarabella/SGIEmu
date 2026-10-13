@@ -100,8 +100,14 @@ static void tlb_exception(R4k *c, int code, uint64_t va, int refill)
 {
     c->cp0[CP0_BADVADDR] = va;
     c->cp0[CP0_CONTEXT] = (c->cp0[CP0_CONTEXT] & ~0x7FFFF0ull) | ((va >> 9) & 0x7FFFF0ull);
-    c->cp0[CP0_XCONTEXT] = (c->cp0[CP0_XCONTEXT] & ~0x1FFFFFFF0ull)
-                         | ((va >> 62) << 31) | ((va >> 9) & 0x7FFFFFF0ull);
+    /* XContext: BadVPN2 = VA[seg-1:13] dai bit 4, sopra R (VA 63:62) e
+       PTEBase. R4400 (40 bit): R 32:31; R10000 (44 bit): R 36:35. */
+    if (c->model == R4K_R10000)
+        c->cp0[CP0_XCONTEXT] = (c->cp0[CP0_XCONTEXT] & ~0x1FFFFFFFF0ull)
+                             | ((va >> 62) << 35) | ((va >> 9) & 0x7FFFFFFF0ull);
+    else
+        c->cp0[CP0_XCONTEXT] = (c->cp0[CP0_XCONTEXT] & ~0x1FFFFFFF0ull)
+                             | ((va >> 62) << 31) | ((va >> 9) & 0x7FFFFFF0ull);
     c->cp0[CP0_ENTRYHI] = (va & c->vpn2_mask) | (c->cp0[CP0_ENTRYHI] & 0xFF);
     uint32_t off = 0x180;
     if (refill && !(c->cp0[CP0_STATUS] & ST_EXL)) off = xmode(c) ? 0x080 : 0x000;
@@ -136,6 +142,7 @@ int r4k_translate_debug(R4k *c, uint64_t va, int store, uint64_t *pa)
 
 static void fast_fill(R4k *c, uint64_t va, uint64_t pa, int wr)
 {
+    pa &= c->pm->addr_mask;
     if (pa >> 32) return;
     uint32_t page = (uint32_t)(pa >> PM_PAGE_SHIFT);
     uint8_t *h = c->pm->host[page];

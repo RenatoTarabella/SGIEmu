@@ -23,6 +23,7 @@ int pm_init(PhysMem *pm)
     pm->host  = calloc(PM_NPAGES, sizeof *pm->host);
     pm->flags = calloc(PM_NPAGES, 1);
     pm->io    = calloc(PM_NPAGES, 1);
+    pm->addr_mask = ~0ull;
     pm->unmapped_read  = default_read;
     pm->unmapped_write = default_write;
     if (!pm->host || !pm->flags || !pm->io) { pm_free(pm); return -1; }
@@ -100,6 +101,7 @@ static void set_code1(PhysMem *pm, uint32_t pa, int on)
 
 void pm_set_code(PhysMem *pm, uint64_t pa, int on)
 {
+    pa &= pm->addr_mask;
     if (pa >> 32) return;
     uint32_t p = (uint32_t)pa;
     set_code1(pm, p, on);
@@ -125,6 +127,7 @@ static const PmIo *find_io(const PhysMem *pm, uint32_t pa)
 
 const char *pm_io_name(const PhysMem *pm, uint64_t pa)
 {
+    pa &= pm->addr_mask;
     if (pa >> 32) return NULL;
     const PmIo *io = find_io(pm, (uint32_t)pa);
     return io ? io->name : NULL;
@@ -132,6 +135,7 @@ const char *pm_io_name(const PhysMem *pm, uint64_t pa)
 
 int pm_read(PhysMem *pm, uint64_t pa, int size, uint64_t *val)
 {
+    pa &= pm->addr_mask;
     if (pa >> 32) { *val = 0; return 1; }
     uint8_t *p = pm_host(pm, pa);
     if (p) {
@@ -150,6 +154,7 @@ int pm_read(PhysMem *pm, uint64_t pa, int size, uint64_t *val)
 
 int pm_write(PhysMem *pm, uint64_t pa, int size, uint64_t val)
 {
+    pa &= pm->addr_mask;
     if (pa >> 32) return 1;
     uint32_t page = (uint32_t)(pa >> PM_PAGE_SHIFT);
     uint8_t *p = pm_host(pm, pa);
@@ -173,6 +178,7 @@ int pm_write(PhysMem *pm, uint64_t pa, int size, uint64_t val)
 
 uint32_t pm_dma_read(PhysMem *pm, uint64_t pa, uint8_t *dst, uint32_t len)
 {
+    pa &= pm->addr_mask;
     uint32_t done = 0;
     while (done < len) {
         uint8_t *h = pm_host(pm, pa + done);
@@ -187,6 +193,7 @@ uint32_t pm_dma_read(PhysMem *pm, uint64_t pa, uint8_t *dst, uint32_t len)
 
 uint32_t pm_dma_write(PhysMem *pm, uint64_t pa, const uint8_t *src, uint32_t len)
 {
+    pa &= pm->addr_mask;
     uint32_t done = 0;
     while (done < len) {
         uint64_t a = pa + done;
