@@ -504,6 +504,51 @@ R4400:
   (1-Wire): bit 1 done, bit 0 line; for now the bus is empty, hence
   "nic_eaddr: No presence pulse" and eaddr 00:00:00:00:00:00 (the MAC comes
   from a NIC, IRIX will need one).
+- **IRIX 6.5 install, state 2026-10-13**: from `cdrom\IRIX 6.5.6
+  Installation Tools and Overlays (1 of 2) November 1999.img` the PROM
+  boots sash64 (`boot -f dksc(1,6,8)sash64`), `fx.64` from
+  `dksc(1,6,7)stand/fx.64 --x` (partitioned `disks\octane.img`, 8 GB sparse
+  from `mkdisk`: default label = root xfs 0, swap 1), and menu 2 "Install
+  System Software" copies the miniroot and boots `unix.IP30`; the miniroot
+  runs mkfs XFS and reaches `Inst>`. Command (≈26 s real, `--snapshot`
+  keeps the image untouched; drop it for the real install):
+  `octane_boot --prom roms\ip30prom.rev4.9.bin --ms 200000 --jit --snapshot
+  --disk disks\octane.img --cdrom "cdrom\IRIX 6.5.6 ... (1 of 2) ....img"
+  --keys "{T=8}{CR}{T=12}2{CR}{T=15}{CR}{T=18}{CR}{T=60}yes{CR}{T=63}y{CR}{T=66}512{CR}"`
+  (the PROM env is reinitialised each run with console=g; for user-level
+  serial output IRIX needs console=d: the installer worked anyway, but
+  set `setenv console d` if output is missing). **Next**: a `{CD=file}`
+  key command in octane_boot to change the CD image mid-run (inst asks for
+  Foundation 1/2 and the overlays), then the full install without
+  `--snapshot`, then boot from disk and keyboard/graphics (Impact).
+  Disk backups: `%TEMP%\claude\octane-empty.bak`, `octane-fx.bak` (8 GB;
+  copying them was suspected in the user's PC shutdowns: prefer
+  `--snapshot`). CD on bus 1 ID 6 (the PROM scans only IDs 1-3 on bus 0).
+- QLogic ISP1040 (`qlisp.c`): firmware emulated at the mailbox/IOCB level.
+  The PROM's firmware uses little-endian IOCBs, IRIX's firmware 32-bit
+  big-endian words (detected per entry from the header); firmware words
+  for LOAD RAM are little-endian; VERIFY CHECKSUM returns 0. CPU access to
+  the 16-bit registers: address ^ 2, natural values.
+- BRIDGE PCI: device windows decode through the device register (PCI
+  address bits 31:20, bit 12 = memory) and the BARs (sizes in
+  `pci_bars[]`); IRIX reaches the IOC3 through window 1. DMA: 0x80000000+
+  direct (DIR_MAP), 0x40000000+ through the 128 internal ATEs (16 KB
+  pages with control bit 21), above 4 GB PCI64 (attributes in 63:48).
+  Interrupts: pin n set the HEART ISR bit in INT_ADDR[n] on a rising edge
+  (clear packet on falling with INT_MODE); QLogic 0/1 on pins 0/1, IOC3
+  INTA (Ethernet) pin 2, **INTB (SuperIO: serial, keyboard) pin 4**.
+- IRIX kernel (64-bit, xkphys `0xA8...`): XTLB refill computes the PTE
+  address as `((XContext >> 6) << 4) | 3 << 62` — R10000 XContext has
+  BadVPN2 in 34:4, R in 36:35, PTEBase from bit 37. IRIX writes EntryLo with
+  MTC0 (sign-extended) and sets PFN bits 33:32 (PA 39:38): the Octane
+  decodes 38 physical bits (`pm.addr_mask`). IRIX uses the CPU
+  Count/Compare as clock, not the HEART timer.
+- IOC3 serial in DMA mode (IRIX): rings at SBBR (4 rings, 8-byte entries:
+  4 chars + 4 status), STPIR/STCIR TX, SRPIR/SRCIR RX; SSCR DMA_PAUSE ->
+  PAUSE_STATE, RX_DRAIN completes at once; EMCR (0xF0) bit 21 idle.
+  Empty PCI config slots bus-error: IRIX prints "Heart Widget PIO Error"
+  for them (harmless, still to clean up with real HEART/Bridge error
+  registers).
 - Tools for this kind of work: `strref.py` style search (addresses are built
   with lui/daddiu/dsll; strings are often base + offset or in tables), and
   traces with `--trace-from` around a console message found with `--stamp`.
