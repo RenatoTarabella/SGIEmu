@@ -334,6 +334,10 @@ static int ioc3_read(Octane *m, uint32_t off, int size, uint64_t *val)
        quindi il reset non vede nessun chip. Lo stesso per il NIC del BRIDGE. */
     if (off == 0x30 && size == 4) { *val = 3; return 0; }
     if (off == 0x28 && size == 4) { *val = m->ioc3[off >> 2] | 0x400000; return 0; }   /* SIO_CR: arbitro inattivo */
+    if (off == 0xF0 && size == 4) {                         /* EMCR: reset finito, arbitro inattivo */
+        *val = (m->ioc3[off >> 2] & 0x7FFFFFFFu) | 0x200000;
+        return 0;
+    }
     if (off < sizeof m->ioc3 && size == 4) {
         *val = m->ioc3[off >> 2];
         if (m->ioc3_log) log_io(m, 0, IOC3_BASE + off, size, *val, "IOC3 reg");

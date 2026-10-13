@@ -28,6 +28,7 @@ static IoPage io_pages[4096];
 static int n_io_pages;
 static long io_print_left = 50;
 static int trace_wait;                                 /* --trace: il log aspetta l'inizio della traccia */
+static uint64_t io_from;                                /* --io-from: il log parte da quest'istruzione */
 
 static void newline(void) { if (!col0) { printf("\n"); col0 = 1; } }
 
@@ -38,7 +39,7 @@ static void io_log(Octane *m, int write, uint64_t pa, int size, uint64_t val, co
     while (k < n_io_pages && io_pages[k].page != page) k++;
     if (k == n_io_pages && n_io_pages < 4096) { io_pages[k].page = page; io_pages[k].what = what; n_io_pages++; }
     if (k < 4096) { if (write) io_pages[k].writes++; else io_pages[k].reads++; }
-    if (io_print_left > 0 && !trace_wait) {
+    if (io_print_left > 0 && !trace_wait && m->cpu.icount >= io_from) {
         io_print_left--;
         newline();
         if (write) printf("  io  W%d %010llX = %llX  %s pc=%016llX i=%llu\n", size * 8, (unsigned long long)pa,
@@ -113,7 +114,7 @@ int main(int argc, char **argv)
     const char *prom_path = NULL, *keys = "";
     unsigned ram_mb = 256, mips = 0;
     uint64_t ms = 5000, trace_at = 0, trace_from = 0, dis_addr = 0;
-    int dis_count = 48, jit = 0, heart = 0, ioc3 = 0, scsi = 0, ndisk = 0;
+    int dis_count = 48, jit = 0, heart = 0, ioc3 = 0, scsi = 0, ndisk = 0, snapshot = 0;
     const char *disk_path[4] = { 0 }, *cdrom_path = NULL;
     long trace = 0;
     for (int k = 1; k < argc; k++) {
@@ -127,6 +128,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--trace-at") && v) { trace_at = strtoull(v, NULL, 16); k++; }
         else if (!strcmp(a, "--trace-from") && v) { trace_from = strtoull(v, NULL, 0); k++; }
         else if (!strcmp(a, "--stamp")) stamp = 1;
+        else if (!strcmp(a, "--io-from") && v) { io_from = strtoull(v, NULL, 0); k++; }
         else if (!strcmp(a, "--io") && v) { io_print_left = atol(v); k++; }
         else if (!strcmp(a, "--exc") && v) { exc_print_left = atol(v); k++; }
         else if (!strcmp(a, "--dis") && v) {
@@ -139,6 +141,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--heart")) heart = 1;
         else if (!strcmp(a, "--ioc3")) ioc3 = 1;
         else if (!strcmp(a, "--scsi")) scsi = 1;
+        else if (!strcmp(a, "--snapshot")) snapshot = 1;
         else if (!strcmp(a, "--disk") && v) { disk_path[ndisk++ & 3] = v; k++; }
         else if (!strcmp(a, "--cdrom") && v) { cdrom_path = v; k++; }
         else usage();
@@ -159,7 +162,7 @@ int main(int argc, char **argv)
     /* dischi sul bus interno 0 dall'ID 1 (i vani sono 1-3, dksc(0,1) e' il disco di
        sistema), CD-ROM sul bus esterno 1 all'ID 6 (la PROM cerca solo li' gli altri ID) */
     for (int k = 0; k < ndisk && k < 3; k++) {
-        if (oct_attach_scsi(&M, 0, 1 + k, SCSI_DISK, disk_path[k], 0)) { printf("non riesco ad aprire %s\n", disk_path[k]); return 1; }
+        if (oct_attach_scsi(&M, 0, 1 + k, SCSI_DISK, disk_path[k], snapshot ? SCSI_SNAPSHOT : 0)) { printf("non riesco ad aprire %s\n", disk_path[k]); return 1; }
         printf("SCSI 0 ID %d: disco %s (%llu MB)\n", 1 + k, disk_path[k], (unsigned long long)(M.disk[0][1 + k].blocks >> 11));
     }
     if (cdrom_path) {
