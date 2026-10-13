@@ -529,7 +529,19 @@ R4400:
    (fast-forward when IRIX idles) would change timing: ask the user first.
    Open glitch seen by the user in the window (with and without JIT): black
    areas in context menus while moving up and down the entries.
-7. **Next (agreed with the user 2026-09-30): Indigo2.** It shares MC and
+7. **Plan changed 2026-10-13: Octane -> Octane2 -> Tezro** (the user wants
+   the most powerful IRIX workstation, not just what MAME does; Indigo2 is
+   skipped for now). Tezro (IP35, 2003, up to 4 R16000 at 1 GHz, VPro
+   V10/V12, NUMAflex with an L1 controller, XIO, PCI-X) is the goal; the
+   Octane2 (IP30, 2 R12000/R14000, XIO via Xbow, VPro) shares CPU family,
+   XIO and VPro with it. Steps: Octane (R10000 = MIPS IV + 64-bit kernel
+   in xkphys, Heart/Xbow/Bridge documented by Linux, Impact graphics),
+   then two CPUs (thread-safe JIT, memory coherence), then VPro (Odyssey,
+   almost undocumented: from the IRIX driver objects in /var/sysgen/boot,
+   which have symbols), then IP35. Prerequisites still missing locally:
+   the IP30 PROM, IRIX 6.5 install CDs with IP30 support (the local
+   irix65.img only has IP22 kernel bits), later the IP35 PROM and a late
+   6.5.x release. Old plan, kept for reference: Indigo2. It shares MC and
    HPC3 with the Indy; differences are the board (IP22 R4400; IP26 R8000
    and IP28 R10000 are MIPS IV), front panel, EISA, and the graphics
    (Extreme/XL/Impact). Then ethernet, audio (HAL2).
