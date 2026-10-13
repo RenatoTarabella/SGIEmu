@@ -129,12 +129,28 @@ static void swr(R4k *c, uint64_t v, uint64_t va, int size)
 
 /* ---- esecuzione di un'istruzione ---- */
 
+static inline int cop1_usable(R4k *c)
+{
+    if (c->cp0[CP0_STATUS] & ST_CU1) return 1;
+    r4k_exception(c, EXC_CPU, 1);
+    return 0;
+}
+
+#define NEED4() do { if (!r4k_mips4_ok(c)) { r4k_exception(c, EXC_RI, 0); return; } } while (0)
+
 static void special(R4k *c, uint32_t insn)
 {
     uint64_t *r = c->r;
     uint64_t a = r[RS], b = r[RT], res;
     switch (insn & 0x3F) {
     case 0x00: r[RD] = SX32((uint32_t)b << SA); return;                    /* SLL */
+    case 0x01:                                                             /* MOVF MOVT */
+        NEED4();
+        if (!cop1_usable(c)) return;
+        if (r4k_fcc(c, (insn >> 18) & 7) == (int)((insn >> 16) & 1)) r[RD] = a;
+        return;
+    case 0x0A: NEED4(); if (!b) r[RD] = a; return;                         /* MOVZ */
+    case 0x0B: NEED4(); if (b) r[RD] = a; return;                          /* MOVN */
     case 0x02: r[RD] = SX32((uint32_t)b >> SA); return;                    /* SRL */
     case 0x03: r[RD] = SX32((int32_t)(uint32_t)b >> SA); return;           /* SRA */
     case 0x04: r[RD] = SX32((uint32_t)b << (a & 31)); return;              /* SLLV */
@@ -262,13 +278,6 @@ static void regimm(R4k *c, uint32_t insn)
     }
 }
 
-static inline int cop1_usable(R4k *c)
-{
-    if (c->cp0[CP0_STATUS] & ST_CU1) return 1;
-    r4k_exception(c, EXC_CPU, 1);
-    return 0;
-}
-
 static inline void exec(R4k *c, uint32_t insn)
 {
     uint64_t *r = c->r;
@@ -308,9 +317,15 @@ static inline void exec(R4k *c, uint32_t insn)
     case 0x12:                                                             /* COP2: assente */
         r4k_exception(c, (c->cp0[CP0_STATUS] & 0x40000000u) ? EXC_RI : EXC_CPU, 2);
         return;
-    case 0x13:                                                             /* COP3 */
+    case 0x13:                                                             /* COP3 / COP1X */
+        if (c->mips4) {
+            NEED4();
+            if (cop1_usable(c)) r4k_cop1x(c, insn);
+            return;
+        }
         r4k_exception(c, (c->cp0[CP0_STATUS] & 0x80000000u) ? EXC_RI : EXC_CPU, 3);
         return;
+    case 0x33: NEED4(); return;                                            /* PREF */
     case 0x14: branch_likely(c, r[RS] == r[rt], c->pc + 4 + (SIMM << 2)); return;      /* BEQL */
     case 0x15: branch_likely(c, r[RS] != r[rt], c->pc + 4 + (SIMM << 2)); return;      /* BNEL */
     case 0x16: branch_likely(c, (int64_t)r[RS] <= 0, c->pc + 4 + (SIMM << 2)); return; /* BLEZL */

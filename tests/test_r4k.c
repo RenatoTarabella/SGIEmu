@@ -554,6 +554,113 @@ static void test_cache(void)
     CHECK_EQ(c->r[T1], 0x12345600);
 }
 
+/* ---- R10000: MIPS IV, 8 codici di condizione, 40 bit fisici ---- */
+
+#define MOVZ(d, s, t)   R_(0x0A, s, t, d, 0)
+#define MOVN(d, s, t)   R_(0x0B, s, t, d, 0)
+#define MOVCI(d, s, cc, tf) R_(0x01, s, ((cc) << 2) | (tf), d, 0)
+#define CCOND(fmt, cc, ft, fs, cond) COP1(fmt, ft, fs, (cc) << 2, 0x30 | (cond))
+#define BC1(cc, tf, off) ((uint32_t)((0x11u << 26) | (8u << 21) | ((cc) << 18) | ((tf) << 16) | ((off) & 0xFFFF)))
+#define COP1X(r, t, s, d, fn) ((uint32_t)((0x13u << 26) | ((r) << 21) | ((t) << 16) | ((s) << 11) | ((d) << 6) | (fn)))
+#define PREF(h, i, s)   I_(0x33, s, h, i)
+
+static void test_r10k(void)
+{
+    printf("R10000: MIPS IV, codici di condizione, 40 bit fisici, cache a due vie\n");
+    r4k_jit_flush(c);
+    CHECK_EQ(r4k_set_model(c, R4K_R10000), 0);
+    setup();
+    CHECK_EQ((c->cp0[CP0_PRID] >> 8) & 0xFF, 0x09);
+    CHECK_EQ((c->cp0[CP0_CONFIG] >> 29) & 7, 3);                /* I-cache 32 KB */
+    CHECK_EQ(c->ntlb, 64);
+
+    /* MOVZ / MOVN */
+    c->r[T0] = 5; c->r[T1] = 0; c->r[T2] = 7;
+    CODE(MOVZ(T3, T0, T1), MOVN(T4, T0, T1), MOVN(T2, T0, T0), PREF(0, 0, ZERO));
+    run(4);
+    CHECK_EQ(c->r[T3], 5);
+    CHECK_EQ(c->r[T4], 0);
+    CHECK_EQ(c->r[T2], 5);
+    CHECK_EQ(last_exc, -1);
+
+    /* C.EQ.D con cc 3: tocca solo il bit 27, poi BC1T cc 3 e MOVT cc 3 */
+    setup();
+    r4k_set_fpr_l(c, 2, 0x4000000000000000ull);                 /* 2.0 */
+    r4k_set_fpr_l(c, 4, 0x4000000000000000ull);
+    c->r[T0] = 9;
+    CODE(CCOND(17, 3, 4, 2, 2), BC1(3, 1, 2), NOP, ADDIU(T1, T1, 1), MOVCI(T2, T0, 3, 1), MOVCI(T3, T0, 0, 1));
+    run(5);
+    CHECK_EQ(c->fcr31, 1u << 27);
+    CHECK_EQ(c->r[T1], 0);                                      /* saltato */
+    CHECK_EQ(c->r[T2], 9);
+    CHECK_EQ(c->r[T3], 0);                                      /* cc 0 falso */
+
+    /* COP1X: LDXC1, MADD.D (2*3+1), NMSUB.S -(2*3-1), SDXC1 */
+    setup();
+    c->r[A0] = KSEG0 + 0x8000; c->r[A1] = 0x10;
+    wbe64(ram + 0x8010, 0x4008000000000000ull);                 /* 3.0 */
+    r4k_set_fpr_l(c, 2, 0x4000000000000000ull);                 /* 2.0 */
+    r4k_set_fpr_l(c, 6, 0x3FF0000000000000ull);                 /* 1.0 */
+    r4k_set_fpr_w(c, 8, 0x40000000u);                           /* 2.0f */
+    r4k_set_fpr_w(c, 9, 0x40400000u);                           /* 3.0f */
+    r4k_set_fpr_w(c, 10, 0x3F800000u);                          /* 1.0f */
+    CODE(COP1X(A0, A1, 0, 4, 0x01),                             /* ldxc1 f4,a1(a0) */
+         COP1X(6, 4, 2, 12, 0x21),                              /* madd.d f12,f6,f2,f4 */
+         COP1X(10, 9, 8, 14, 0x38),                             /* nmsub.s f14,f10,f8,f9 */
+         COP1X(A0, ZERO, 12, 0, 0x09));                         /* sdxc1 f12,zero(a0) */
+    run(4);
+    CHECK_EQ(r4k_fpr_l(c, 4), 0x4008000000000000ull);
+    CHECK_EQ(r4k_fpr_l(c, 12), 0x401C000000000000ull);          /* 7.0 */
+    CHECK_EQ(r4k_fpr_w(c, 14), 0xC0A00000u);                    /* -5.0f */
+    CHECK_EQ(be64(ram + 0x8000), 0x401C000000000000ull);
+
+    /* COP1X senza CU1: CpU */
+    setup();
+    r4k_cp0_write(c, CP0_STATUS, 0);
+    CODE(COP1X(A0, A1, 0, 4, 0x01));
+    run(1);
+    CHECK_EQ(last_exc, EXC_CPU);
+
+    /* xkphys a 40 bit: 0x90000F0000000000 non e' un errore di indirizzo
+       (sull'R4400 si'); non c'e' niente, quindi bus error */
+    setup();
+    r4k_cp0_write(c, CP0_STATUS, ST_KX);
+    c->r[A0] = 0x900000F000000000ull;
+    CODE(LW(T0, 0, A0));
+    run(1);
+    CHECK_EQ(last_exc, EXC_DBE);
+
+    /* TLB: la voce 63 esiste */
+    setup();
+    tlb_put(63, 0, 0x00400000, LO(0x10, 6), LO(0x11, 6));
+    wbe32(ram + 0x10000, 0xCAFEBABEu);
+    c->r[A0] = 0x00400000;
+    CODE(LW(T0, 0, A0));
+    run(1);
+    CHECK_EQ(c->r[T0], 0xFFFFFFFFCAFEBABEull);
+
+    /* cache a due vie: tag e dati di via 0 e via 1 restano distinti */
+    setup();
+    c->r[A0] = KSEG0; c->r[A1] = KSEG0 + 1;
+    c->r[T0] = 0x1111; c->r[T1] = 0x2222;
+    CODE(MTC0(T0, CP0_TAGLO), CACHE(0x09, 0x40, A0),            /* Index_Store_Tag D, via 0 */
+         MTC0(T1, CP0_TAGLO), CACHE(0x09, 0x40, A1),            /* via 1 */
+         CACHE(0x05, 0x40, A0), MFC0(T2, CP0_TAGLO),            /* Index_Load_Tag D */
+         MTC0(T1, CP0_TAGLO), CACHE(0x1F, 0x40, A1),            /* Index_Store_Data S */
+         MTC0(ZERO, CP0_TAGLO), CACHE(0x1B, 0x40, A1),          /* Index_Load_Data S */
+         MFC0(T3, CP0_TAGLO));
+    run(11);
+    CHECK_EQ(c->r[T2], 0x1111);
+    CHECK_EQ(c->r[T3], 0x2222);
+
+    r4k_jit_flush(c);
+    CHECK_EQ(r4k_set_model(c, R4K_R4400), 0);
+    setup();
+    CODE(MOVZ(T3, T0, T1));                                     /* sull'R4400 non c'e' */
+    run(1);
+    CHECK_EQ(last_exc, EXC_RI);
+}
+
 static int code_writes;
 static void on_code_write(void *ctx, uint32_t pa) { (void)ctx; (void)pa; code_writes++; }
 
@@ -625,6 +732,7 @@ int main(int argc, char **argv)
     test_unaligned();
     test_fpu();
     test_cache();
+    test_r10k();
     test_code_pages();
     test_disasm();
     printf("%d controlli, %d falliti\n", checks, failures);

@@ -28,12 +28,18 @@
 #include <stdint.h>
 #include "mem/physmem.h"
 
-#define R4K_TLB_ENTRIES   48
+#define R4K_TLB_MAX       64            /* voci: 48 sull'R4400, 64 sull'R10000 */
 #define R4K_FAST_BITS     10
 #define R4K_FAST_SIZE     (1u << R4K_FAST_BITS)
 #define R4K_FAST_INVALID  (~(uint64_t)0)
 
 enum { R4K_MODE_KERNEL = 0, R4K_MODE_SUPER = 1, R4K_MODE_USER = 2 };
+
+/* modelli di CPU (r4k_set_model). L'R10000 aggiunge al MIPS III le
+   istruzioni MIPS IV (MOVN/MOVZ, MOVF/MOVT, PREF, COP1X, 8 codici di
+   condizione della FPU), 64 voci di TLB, 44 bit virtuali e 40 fisici, cache
+   primarie a due vie da 32 KB. La pipeline fuori ordine non si emula. */
+enum { R4K_R4400 = 0, R4K_R10000 = 1 };
 
 /* ---- registri del CP0 ---- */
 enum {
@@ -64,6 +70,7 @@ enum {
 #define ST_RP    0x08000000u
 #define ST_CU0   0x10000000u
 #define ST_CU1   0x20000000u
+#define ST_XX    0x80000000u                    /* R10000: MIPS IV in modo utente */
 
 /* ---- Cause ---- */
 #define CAUSE_BD      0x80000000u
@@ -87,6 +94,7 @@ enum {
 #define FCSR_C        0x00800000u
 #define FCSR_FS       0x01000000u
 #define FCSR_MASK     0x0183FFFFu
+#define FCSR_CC17     0xFE000000u               /* MIPS IV: codici di condizione 1..7 */
 /* bit dei singoli eccezioni FPU, nella posizione dei flag (>> 2) */
 enum { FPX_I = 1, FPX_U = 2, FPX_O = 4, FPX_Z = 8, FPX_V = 16, FPX_E = 32 };
 
@@ -135,7 +143,7 @@ typedef struct R4k {
 
     /* ---- CP0 ---- */
     uint64_t cp0[32];
-    R4kTlb   tlb[R4K_TLB_ENTRIES];
+    R4kTlb   tlb[R4K_TLB_MAX];
     uint32_t ip_ext;           /* linee di interrupt esterne, gia' in posizione IP2..IP7 */
     uint32_t ip_timer;         /* Count == Compare (IP7)              */
     uint64_t count_base, count_icount, timer_event;
@@ -146,6 +154,18 @@ typedef struct R4k {
     uint32_t *ictag, *dctag, *sctag;
     uint32_t icache_size, dcache_size, scache_size;
     uint32_t icache_line, dcache_line, scache_line;
+    int      cache_ways;               /* 1 sull'R4400, 2 sull'R10000 (via = bit 0 dell'indirizzo) */
+    uint32_t *ictag_hi, *dctag_hi, *sctag_hi;   /* R10000: TagHi di ogni riga */
+    uint64_t *icdata, *dcdata, *scdata;         /* R10000: dati per Index Load/Store Data */
+
+    /* ---- modello (r4k_set_model) ---- */
+    int      model;                    /* R4K_R4400, R4K_R10000 */
+    int      mips4;                    /* istruzioni MIPS IV */
+    int      ntlb;                     /* voci del TLB */
+    uint64_t vpn2_mask;                /* R e VPN2 di EntryHi */
+    uint64_t pfn_mask;                 /* EntryLo: PFN, C, D, V */
+    uint64_t pa_mask;                  /* bit dell'indirizzo fisico */
+    uint64_t seg_limit;                /* dimensione dei segmenti mappati a 64 bit */
 
     PhysMem *pm;
 
@@ -170,6 +190,8 @@ typedef struct R4k {
 int  r4k_init(R4k *c, PhysMem *pm);
 void r4k_free(R4k *c);
 void r4k_reset(R4k *c);                 /* reset a freddo: pc = 0xBFC00000 */
+/* sceglie il modello (default R4400) e fa il reset; -1 = memoria esaurita */
+int  r4k_set_model(R4k *c, int model);
 
 /* Esegue fino a n istruzioni; ritorna quante ne ha eseguite. */
 uint64_t r4k_run(R4k *c, uint64_t n);

@@ -14,6 +14,11 @@
  *
  * L'R4400 vero da' Unimplemented Operation per i denormali e i casi
  * strani, e IRIX li emula nel kernel: qui si calcolano direttamente.
+ *
+ * MIPS IV (R10000, c->mips4): C.cond e BC1 hanno un codice di condizione
+ * (cc 0..7, r4k_fcc), MOVF/MOVT/MOVZ/MOVN.fmt, RECIP e RSQRT (calcolati
+ * esatti), e COP1X: load/store indicizzate e MADD/MSUB/NMADD/NMSUB senza
+ * fusione (il prodotto viene arrotondato prima della somma).
  */
 #include <math.h>
 #include <fenv.h>
@@ -144,6 +149,14 @@ static void fpu_arith(R4k *c, uint32_t insn)
     int ft = (insn >> 16) & 31, fs = (insn >> 11) & 31, fd = (insn >> 6) & 31;
     int dbl = fmt == FMT_D;
 
+    /* MIPS IV: MOVF/MOVT, MOVZ, MOVN copiano senza flag */
+    if (c->mips4 && fn >= 17 && fn <= 19 && (fmt == FMT_S || fmt == FMT_D)) {
+        int take = fn == 17 ? r4k_fcc(c, (insn >> 18) & 7) == (int)((insn >> 16) & 1)
+                 : fn == 18 ? c->r[ft] == 0 : c->r[ft] != 0;
+        if (take) { if (dbl) set_fpr_l(c, fd, fpr_l(c, fs)); else set_fpr_w(c, fd, fpr_w(c, fs)); }
+        return;
+    }
+
     /* ABS, MOV, NEG: solo il bit di segno, niente flag */
     if (fn >= 5 && fn <= 7 && (fmt == FMT_S || fmt == FMT_D)) {
         if (dbl) {
@@ -163,6 +176,8 @@ static void fpu_arith(R4k *c, uint32_t insn)
     case 12: case 13: case 14: case 15:                  /* ROUND.W ... FLOOR.W */
     case 36: case 37:                                    /* CVT.W CVT.L */
         valid = fmt == FMT_S || fmt == FMT_D; break;
+    case 21: case 22:                                    /* RECIP RSQRT (MIPS IV) */
+        valid = c->mips4 && (fmt == FMT_S || fmt == FMT_D); break;
     case 32: valid = fmt == FMT_D || fmt == FMT_W || fmt == FMT_L; break;   /* CVT.S */
     case 33: valid = fmt == FMT_S || fmt == FMT_W || fmt == FMT_L; break;   /* CVT.D */
     default: valid = fn >= 48 && (fmt == FMT_S || fmt == FMT_D); break;     /* C.cond */
@@ -206,6 +221,25 @@ static void fpu_arith(R4k *c, uint32_t insn)
                 case 3: z = x / y; break;
                 default: z = sqrtf(x); break;
                 }
+                fl |= host_flags();
+                res = fix_s(c, bits_f(z), &fl);
+            }
+        }
+    } else if (fn == 21 || fn == 22) {                   /* RECIP RSQRT */
+        if (dbl) {
+            uint64_t a = fpr_l(c, fs), n;
+            res64 = 1;
+            if (nan1_d(a, &n, &fl)) res = n;
+            else {
+                double x = d_of(a), z = fn == 21 ? 1.0 / x : 1.0 / sqrt(x);
+                fl |= host_flags();
+                res = fix_d(c, bits_d(z), &fl);
+            }
+        } else {
+            uint32_t a = fpr_w(c, fs), n;
+            if (nan1_s(a, &n, &fl)) res = n;
+            else {
+                float x = f_of(a), z = fn == 21 ? 1.0f / x : 1.0f / sqrtf(x);
                 fl |= host_flags();
                 res = fix_s(c, bits_f(z), &fl);
             }
@@ -283,7 +317,9 @@ static void fpu_arith(R4k *c, uint32_t insn)
     if (rm) fesetround(FE_TONEAREST);
     if (!fpu_finish(c, fl)) return;
     if (cond >= 0) {
-        if (cond) c->fcr31 |= FCSR_C; else c->fcr31 &= ~FCSR_C;
+        int cc = c->mips4 ? (int)(insn >> 8) & 7 : 0;
+        uint32_t bit = cc ? 1u << (24 + cc) : FCSR_C;
+        if (cond) c->fcr31 |= bit; else c->fcr31 &= ~bit;
     } else if (write) {
         if (res64) set_fpr_l(c, fd, res); else set_fpr_w(c, fd, (uint32_t)res);
     }
@@ -308,13 +344,13 @@ void r4k_cop1(R4k *c, uint32_t insn)
         return;
     case 6:                                                        /* CTC1 */
         if (fs == 31) {
-            c->fcr31 = (uint32_t)c->r[rt] & FCSR_MASK;
+            c->fcr31 = (uint32_t)c->r[rt] & (c->mips4 ? FCSR_MASK | FCSR_CC17 : FCSR_MASK);
             uint32_t cause = (c->fcr31 >> 12) & 63, en = ((c->fcr31 >> 7) & 31) | FPX_E;
             if (cause & en) r4k_exception(c, EXC_FPE, 0);
         }
         return;
     case 8: {                                                      /* BC1F/T/FL/TL */
-        int cond = (c->fcr31 & FCSR_C) != 0;
+        int cond = r4k_fcc(c, c->mips4 ? (int)(insn >> 18) & 7 : 0);
         int want = (insn >> 16) & 1, likely = (insn >> 17) & 1;
         uint64_t target = c->pc + 4 + ((uint64_t)(int64_t)(int16_t)insn << 2);
         int take = cond == want;
@@ -330,6 +366,64 @@ void r4k_cop1(R4k *c, uint32_t insn)
     case FMT_S: case FMT_D: case FMT_W: case FMT_L:
         fpu_arith(c, insn);
         return;
+    default: break;
+    }
+    r4k_exception(c, EXC_RI, 0);
+}
+
+/* ---- COP1X (MIPS IV) ---- */
+
+/* MADD MSUB NMADD NMSUB: fd = +-(fs * ft +- fr), il prodotto arrotondato.
+   NaN in ingresso: un sNaN da' Invalid e il NaN di default, altrimenti
+   passa il primo qNaN tra fs, ft, fr. */
+static void madd(R4k *c, uint32_t insn, int dbl)
+{
+    int fr = (insn >> 21) & 31, ft = (insn >> 16) & 31, fs = (insn >> 11) & 31, fd = (insn >> 6) & 31;
+    int kind = (insn >> 3) & 7;                          /* 4 MADD, 5 MSUB, 6 NMADD, 7 NMSUB */
+    uint32_t fl = 0;
+    int rm = (int)(c->fcr31 & 3);
+    if (rm) fesetround(host_rm[rm]);
+    feclearexcept(FE_ALL_EXCEPT);
+    uint64_t res;
+    if (dbl) {
+        uint64_t a = fpr_l(c, fs), b = fpr_l(c, ft), r = fpr_l(c, fr), n;
+        if (nan2_d(a, b, &n, &fl) || nan1_d(r, &n, &fl)) res = n;
+        else {
+            double p = d_of(a) * d_of(b);
+            double z = (kind & 1) ? p - d_of(r) : p + d_of(r);
+            fl |= host_flags();
+            res = fix_d(c, bits_d(z), &fl);
+            if (kind >= 6 && !nan_d(res)) res ^= 1ull << 63;
+        }
+    } else {
+        uint32_t a = fpr_w(c, fs), b = fpr_w(c, ft), r = fpr_w(c, fr), n;
+        if (nan2_s(a, b, &n, &fl) || nan1_s(r, &n, &fl)) res = n;
+        else {
+            float p = f_of(a) * f_of(b);
+            float z = (kind & 1) ? p - f_of(r) : p + f_of(r);
+            fl |= host_flags();
+            res = fix_s(c, bits_f(z), &fl);
+            if (kind >= 6 && !nan_s((uint32_t)res)) res ^= 0x80000000u;
+        }
+    }
+    if (rm) fesetround(FE_TONEAREST);
+    if (!fpu_finish(c, fl)) return;
+    if (dbl) set_fpr_l(c, fd, res); else set_fpr_w(c, fd, (uint32_t)res);
+}
+
+void r4k_cop1x(R4k *c, uint32_t insn)
+{
+    int fs = (insn >> 11) & 31, fd = (insn >> 6) & 31;
+    uint64_t ea = c->r[(insn >> 21) & 31] + c->r[(insn >> 16) & 31];   /* base + indice */
+    uint64_t v;
+    switch (insn & 63) {
+    case 0x00: if (ld32(c, ea, &v)) set_fpr_w(c, fd, (uint32_t)v); return;   /* LWXC1 */
+    case 0x01: if (ld64(c, ea, &v)) set_fpr_l(c, fd, v); return;             /* LDXC1 */
+    case 0x08: st32(c, ea, fpr_w(c, fs)); return;                            /* SWXC1 */
+    case 0x09: st64(c, ea, fpr_l(c, fs)); return;                            /* SDXC1 */
+    case 0x0F: return;                                                       /* PREFX */
+    case 0x20: case 0x28: case 0x30: case 0x38: madd(c, insn, 0); return;
+    case 0x21: case 0x29: case 0x31: case 0x39: madd(c, insn, 1); return;
     default: break;
     }
     r4k_exception(c, EXC_RI, 0);

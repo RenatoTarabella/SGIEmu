@@ -55,6 +55,11 @@ interrupts). Then Indigo2 (IP22), which shares the ASICs.
   - `roms/ip24prom.bin` = `ip24prom.070-9101-011.bin` from MAME's
     `indy_4610.zip` (512 KB); `roms/indy_4610/` also has the keyboard
     `natural.bin` and a PAL dump;
+  - `roms/ip30prom.rev4.9.bin`: Octane PROM, 1 MB, SHA1 de250875... as in
+    MAME's `octane` set (CRC 10bafb52); big-endian as stored (word 0 is
+    `j 0xBFC003C0`), no byteswap. The flash holds two images ("Rev 4.9" and
+    "Rev 4.16", May 22 2003) and the environment of the machine it was
+    dumped from (Linux nfsroot `OSLoadOptions`);
   - `roms/nvram/eeprom` (256 B, 93CS56 with the PROM environment) and
     `roms/nvram/rtc` (8 KB DS1386) as saved by MAME;
   - `disks/irix53.img`: raw 7.5 GB SCSI disk (SGI volume header with sash,

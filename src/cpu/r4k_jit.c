@@ -868,6 +868,7 @@ static int emit_fpu_arith(Comp *k, uint32_t insn, uint64_t pc, uint32_t kd)
             return 1;
         }
         if (fn >= 48) {                                           /* C.cond senza NaN */
+            if (k->c->mips4 && ((insn >> 8) & 7)) return 0;      /* cc 1..7: interprete */
             int cc = fn & 15;
             sse_m(e, pfx, 0, 0x10, 0, dbl ? fl_off(k, fs) : fw_off(k, fs));
             sse_m(e, dbl ? 0x66 : 0, 0, 0x2E, 0, dbl ? fl_off(k, ft) : fw_off(k, ft));  /* ucomis */
@@ -1289,7 +1290,10 @@ static int emit_branch(Comp *k, uint32_t insn, uint64_t pc, int idx, uint64_t *t
         x_m(e, 0, 0, 0xF7, 0, CTX, -1, OFF(cp0) + 8 * CP0_STATUS); b4(e, ST_CU1);
         Stub *s = add_stub(k, 0, jcc(e, CC_E), insn, pc, kd);      /* CpU dall'interprete */
         s->resume = e->p;
-        x_m(e, 0, 0, 0xF7, 0, CTX, -1, OFF(fcr31)); b4(e, FCSR_C);
+        {
+            int fcc = k->c->mips4 ? (int)(insn >> 18) & 7 : 0;    /* MIPS IV: cc 0..7 */
+            x_m(e, 0, 0, 0xF7, 0, CTX, -1, OFF(fcr31)); b4(e, fcc ? 1u << (24 + fcc) : FCSR_C);
+        }
         cc = (insn >> 16) & 1 ? CC_NE : CC_E;
         likely = (insn >> 17) & 1;
         break;

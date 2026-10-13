@@ -31,10 +31,25 @@ static inline int  r4k_cp0_usable(const R4k *c)
     return c->mode == R4K_MODE_KERNEL || (c->cp0[CP0_STATUS] & ST_CU0);
 }
 
+/* MIPS IV: sull'R10000 sempre in kernel e supervisor, in modo utente
+   solo con Status.XX */
+static inline int r4k_mips4_ok(const R4k *c)
+{
+    return c->mips4 && (c->mode != R4K_MODE_USER || (c->cp0[CP0_STATUS] & ST_XX));
+}
+
+/* codice di condizione della FPU: 0 e' il bit 23 di FCSR (il C del MIPS
+   III), 1..7 i bit 25..31 */
+static inline int r4k_fcc(const R4k *c, int cc)
+{
+    return (int)(c->fcr31 >> (cc ? 24 + cc : 23)) & 1;
+}
+
 /* ---- istruzioni di coprocessore ---- */
 void r4k_cop0(R4k *c, uint32_t insn);
 void r4k_cache_op(R4k *c, uint32_t insn);
 void r4k_cop1(R4k *c, uint32_t insn);
+void r4k_cop1x(R4k *c, uint32_t insn);          /* MIPS IV, opcode 0x13 */
 
 /* ---- memoria (r4k_mmu.c) ---- */
 int r4k_read_slow (R4k *c, uint64_t va, int size, uint64_t *val);
