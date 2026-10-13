@@ -246,6 +246,11 @@ int main(int argc, char **argv)
         printf(" %d:%llu", best, (unsigned long long)sys_hist[best]);
         sys_hist[best] = 0;
     }
+    printf("\nIOC3 SIO_IR %08X IES %08X  A: SSCR %08X STPIR %X STCIR %X SRPIR %X SRCIR %X  SBBR %08X:%08X  coda rx %d\n",
+           M.ioc3[0x1C >> 2], M.ioc3[0x20 >> 2], M.ioc3[0xB8 >> 2], M.ioc3[0xBC >> 2], M.ioc3[0xC0 >> 2],
+           M.ioc3[0xC4 >> 2], M.ioc3[0xC8 >> 2], M.ioc3[0xB0 >> 2], M.ioc3[0xB4 >> 2], M.uart[0].rx_n);
+    printf("BRIDGE INT_ENABLE %08X INT_ADDR2 %08X piedini %02X inviati %02X",
+           (uint32_t)M.bridge[0x108 >> 3], (uint32_t)M.bridge[0x148 >> 3], M.bridge_pins, M.bridge_sent);
     printf("\nHEART ISR %016llX IMR0 %016llX compare %06llX  CP0 Count %08llX Compare %08llX\n",
            (unsigned long long)M.heart.isr, (unsigned long long)M.heart.imr[0],
            (unsigned long long)M.heart.compare, (unsigned long long)r4k_cp0_read(&M.cpu, CP0_COUNT),

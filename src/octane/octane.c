@@ -836,7 +836,9 @@ static void bridge_update_irq(Octane *m)
     uint8_t pins = 0;
     if (ql_irq(&m->ql[0])) pins |= 1;
     if (ql_irq(&m->ql[1])) pins |= 2;
-    if (m->ioc3[0x1C >> 2] & m->ioc3[0x20 >> 2]) pins |= 4;   /* IOC3: SIO_IR & abilitati */
+    /* IOC3: la SuperIO (seriali, tastiera: SIO_IR & abilitati) usa INTB,
+       che sulla scheda dell'Octane e' il piedino 4; INTA (Ethernet) il 2 */
+    if (m->ioc3[0x1C >> 2] & m->ioc3[0x20 >> 2]) pins |= 0x10;
     m->bridge_pins = pins;
     uint32_t enable = bridge_reg32(m, 0x10C), mode = bridge_reg32(m, 0x11C);
     for (int p = 0; p < 8; p++) {
